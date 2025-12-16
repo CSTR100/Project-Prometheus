@@ -1,0 +1,394 @@
+"""
+Planetary Anomaly Detection Pipeline for Technosignature Research
+End-to-end ML system for identifying anomalous structures in planetary imagery
+"""
+
+import numpy as np
+import torch
+import torch.nn as nn
+import torchvision.models as models
+import torchvision.transforms as transforms
+from torch.utils.data import Dataset, DataLoader
+from PIL import Image
+import os
+from pathlib import Path
+from sklearn.ensemble import IsolationForest
+from sklearn.preprocessing import StandardScaler
+import json
+from typing import List, Tuple, Dict
+import matplotlib.pyplot as plt
+from tqdm import tqdm
+
+# ==================== Configuration ====================
+class Config:
+    """Configuration parameters for the pipeline"""
+    # Paths
+    EARTH_NATURAL_PATH = "data/earth/natural"
+    EARTH_ANTHROPOGENIC_PATH = "data/earth/anthropogenic"
+    MARS_PATH = "data/mars"
+    MOON_PATH = "data/moon"
+    OUTPUT_PATH = "results"
+    
+    # Model parameters
+    BATCH_SIZE = 32
+    IMG_SIZE = 224
+    FEATURE_DIM = 2048  # ResNet50 output
+    ANOMALY_THRESHOLD = -0.5  # Isolation Forest threshold
+    
+    # Training
+    DEVICE = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    NUM_WORKERS = 4
+
+# ==================== Dataset Classes ====================
+class PlanetaryImageDataset(Dataset):
+    """Dataset loader for planetary imagery"""
+    
+    def __init__(self, image_paths: List[str], transform=None, labels=None):
+        self.image_paths = image_paths
+        self.transform = transform
+        self.labels = labels
+        
+    def __len__(self):
+        return len(self.image_paths)
+    
+    def __getitem__(self, idx):
+        img_path = self.image_paths[idx]
+        image = Image.open(img_path).convert('RGB')
+        
+        if self.transform:
+            image = self.transform(image)
+        
+        if self.labels is not None:
+            return image, self.labels[idx], img_path
+        return image, img_path
+
+# ==================== Feature Extractor ====================
+class FeatureExtractor:
+    """Extract deep features using pretrained CNN with transfer learning"""
+    
+    def __init__(self, config: Config):
+        self.config = config
+        self.device = config.DEVICE
+        
+        # Load pretrained ResNet50 and remove final classification layer
+        self.model = models.resnet50(pretrained=True)
+        self.model = nn.Sequential(*list(self.model.children())[:-1])
+        self.model = self.model.to(self.device)
+        self.model.eval()
+        
+        # Image preprocessing
+        self.transform = transforms.Compose([
+            transforms.Resize((config.IMG_SIZE, config.IMG_SIZE)),
+            transforms.ToTensor(),
+            transforms.Normalize(mean=[0.485, 0.456, 0.406], 
+                               std=[0.229, 0.224, 0.225])
+        ])
+    
+    def extract_features(self, dataloader: DataLoader) -> Tuple[np.ndarray, List[str]]:
+        """Extract feature vectors from images"""
+        features_list = []
+        paths_list = []
+        
+        print("Extracting features...")
+        with torch.no_grad():
+            for batch in tqdm(dataloader):
+                if len(batch) == 2:
+                    images, paths = batch
+                else:
+                    images, _, paths = batch
+                
+                images = images.to(self.device)
+                features = self.model(images)
+                features = features.squeeze().cpu().numpy()
+                
+                if features.ndim == 1:
+                    features = features.reshape(1, -1)
+                
+                features_list.append(features)
+                paths_list.extend(paths)
+        
+        features = np.vstack(features_list)
+        return features, paths_list
+
+# ==================== Anomaly Detector ====================
+class AnomalyDetector:
+    """Unsupervised anomaly detection using Isolation Forest"""
+    
+    def __init__(self, config: Config):
+        self.config = config
+        self.scaler = StandardScaler()
+        self.detector = IsolationForest(
+            contamination=0.1,  # Expected proportion of anomalies
+            random_state=42,
+            n_estimators=100
+        )
+    
+    def fit(self, features: np.ndarray):
+        """Train anomaly detector on natural features"""
+        print("Training anomaly detector...")
+        features_scaled = self.scaler.fit_transform(features)
+        self.detector.fit(features_scaled)
+        print("Anomaly detector trained!")
+    
+    def predict(self, features: np.ndarray) -> Tuple[np.ndarray, np.ndarray]:
+        """
+        Predict anomalies
+        Returns: (predictions, scores)
+            predictions: 1 for normal, -1 for anomaly
+            scores: anomaly scores (lower = more anomalous)
+        """
+        features_scaled = self.scaler.transform(features)
+        predictions = self.detector.predict(features_scaled)
+        scores = self.detector.score_samples(features_scaled)
+        return predictions, scores
+
+# ==================== Pipeline Manager ====================
+class AnomalyDetectionPipeline:
+    """Main pipeline orchestrator"""
+    
+    def __init__(self, config: Config):
+        self.config = config
+        self.feature_extractor = FeatureExtractor(config)
+        self.anomaly_detector = AnomalyDetector(config)
+        
+        # Create output directory
+        Path(config.OUTPUT_PATH).mkdir(parents=True, exist_ok=True)
+    
+    def load_images_from_directory(self, directory: str) -> List[str]:
+        """Load all image paths from directory"""
+        extensions = ['.png', '.jpg', '.jpeg', '.tif', '.tiff']
+        image_paths = []
+        
+        path = Path(directory)
+        if path.exists():
+            for ext in extensions:
+                image_paths.extend([str(p) for p in path.rglob(f'*{ext}')])
+        
+        return image_paths
+    
+    def train(self):
+        """Train the anomaly detection model on natural Earth features"""
+        print("="*60)
+        print("TRAINING PHASE")
+        print("="*60)
+        
+        # Load natural Earth imagery (training data)
+        natural_paths = self.load_images_from_directory(self.config.EARTH_NATURAL_PATH)
+        print(f"Loaded {len(natural_paths)} natural Earth images for training")
+        
+        if len(natural_paths) == 0:
+            raise ValueError(f"No images found in {self.config.EARTH_NATURAL_PATH}")
+        
+        # Create dataset and dataloader
+        dataset = PlanetaryImageDataset(
+            natural_paths, 
+            transform=self.feature_extractor.transform
+        )
+        dataloader = DataLoader(
+            dataset, 
+            batch_size=self.config.BATCH_SIZE,
+            shuffle=False,
+            num_workers=self.config.NUM_WORKERS
+        )
+        
+        # Extract features
+        features, _ = self.feature_extractor.extract_features(dataloader)
+        
+        # Train anomaly detector
+        self.anomaly_detector.fit(features)
+        
+        print("Training complete!\n")
+    
+    def validate_on_known_features(self):
+        """Validate on Earth images with known anthropogenic features"""
+        print("="*60)
+        print("VALIDATION PHASE")
+        print("="*60)
+        
+        anthropogenic_paths = self.load_images_from_directory(
+            self.config.EARTH_ANTHROPOGENIC_PATH
+        )
+        print(f"Loaded {len(anthropogenic_paths)} anthropogenic images for validation")
+        
+        if len(anthropogenic_paths) == 0:
+            print("Warning: No anthropogenic images found for validation\n")
+            return
+        
+        # Process images
+        dataset = PlanetaryImageDataset(
+            anthropogenic_paths,
+            transform=self.feature_extractor.transform
+        )
+        dataloader = DataLoader(
+            dataset,
+            batch_size=self.config.BATCH_SIZE,
+            shuffle=False,
+            num_workers=self.config.NUM_WORKERS
+        )
+        
+        features, paths = self.feature_extractor.extract_features(dataloader)
+        predictions, scores = self.anomaly_detector.predict(features)
+        
+        # Calculate detection rate
+        anomaly_count = np.sum(predictions == -1)
+        detection_rate = anomaly_count / len(predictions) * 100
+        
+        print(f"Detection rate on anthropogenic features: {detection_rate:.1f}%")
+        print(f"Detected {anomaly_count}/{len(predictions)} as anomalies\n")
+    
+    def analyze_planetary_surface(self, planet_name: str, data_path: str) -> Dict:
+        """Analyze planetary imagery for anomalies"""
+        print("="*60)
+        print(f"ANALYZING {planet_name.upper()} SURFACE")
+        print("="*60)
+        
+        # Load planetary images
+        image_paths = self.load_images_from_directory(data_path)
+        print(f"Loaded {len(image_paths)} {planet_name} images")
+        
+        if len(image_paths) == 0:
+            print(f"Warning: No images found in {data_path}\n")
+            return {}
+        
+        # Process images
+        dataset = PlanetaryImageDataset(
+            image_paths,
+            transform=self.feature_extractor.transform
+        )
+        dataloader = DataLoader(
+            dataset,
+            batch_size=self.config.BATCH_SIZE,
+            shuffle=False,
+            num_workers=self.config.NUM_WORKERS
+        )
+        
+        features, paths = self.feature_extractor.extract_features(dataloader)
+        predictions, scores = self.anomaly_detector.predict(features)
+        
+        # Compile results
+        results = {
+            'planet': planet_name,
+            'total_images': len(paths),
+            'anomalies': [],
+            'statistics': {
+                'num_anomalies': int(np.sum(predictions == -1)),
+                'anomaly_rate': float(np.sum(predictions == -1) / len(predictions) * 100),
+                'mean_score': float(np.mean(scores)),
+                'min_score': float(np.min(scores))
+            }
+        }
+        
+        # Store anomaly details
+        for i, (pred, score, path) in enumerate(zip(predictions, scores, paths)):
+            if pred == -1:
+                results['anomalies'].append({
+                    'image_path': path,
+                    'anomaly_score': float(score),
+                    'rank': None  # Will be set after sorting
+                })
+        
+        # Sort anomalies by score (most anomalous first)
+        results['anomalies'] = sorted(
+            results['anomalies'], 
+            key=lambda x: x['anomaly_score']
+        )
+        
+        # Add ranking
+        for rank, anomaly in enumerate(results['anomalies'], 1):
+            anomaly['rank'] = rank
+        
+        # Print summary
+        print(f"\nResults for {planet_name}:")
+        print(f"  Total images analyzed: {results['total_images']}")
+        print(f"  Anomalies detected: {results['statistics']['num_anomalies']}")
+        print(f"  Anomaly rate: {results['statistics']['anomaly_rate']:.2f}%")
+        
+        if results['anomalies']:
+            print(f"\nTop 5 most anomalous features:")
+            for anomaly in results['anomalies'][:5]:
+                print(f"    {anomaly['rank']}. {Path(anomaly['image_path']).name} "
+                      f"(score: {anomaly['anomaly_score']:.3f})")
+        
+        # Save results
+        output_file = Path(self.config.OUTPUT_PATH) / f"{planet_name}_anomalies.json"
+        with open(output_file, 'w') as f:
+            json.dump(results, f, indent=2)
+        print(f"\nResults saved to: {output_file}\n")
+        
+        return results
+    
+    def visualize_top_anomalies(self, results: Dict, top_n: int = 10):
+        """Visualize the most anomalous images"""
+        planet = results['planet']
+        anomalies = results['anomalies'][:top_n]
+        
+        if not anomalies:
+            print(f"No anomalies found for {planet}")
+            return
+        
+        n = len(anomalies)
+        cols = 5
+        rows = (n + cols - 1) // cols
+        
+        fig, axes = plt.subplots(rows, cols, figsize=(15, 3*rows))
+        axes = axes.flatten() if n > 1 else [axes]
+        
+        for i, anomaly in enumerate(anomalies):
+            img = Image.open(anomaly['image_path'])
+            axes[i].imshow(img)
+            axes[i].set_title(f"Rank {anomaly['rank']}\nScore: {anomaly['anomaly_score']:.3f}", 
+                            fontsize=8)
+            axes[i].axis('off')
+        
+        # Hide unused subplots
+        for i in range(n, len(axes)):
+            axes[i].axis('off')
+        
+        plt.tight_layout()
+        output_file = Path(self.config.OUTPUT_PATH) / f"{planet}_top_anomalies.png"
+        plt.savefig(output_file, dpi=150, bbox_inches='tight')
+        print(f"Visualization saved to: {output_file}")
+        plt.close()
+
+# ==================== Main Execution ====================
+def main():
+    """Run the complete anomaly detection pipeline"""
+    
+    print("\n" + "="*60)
+    print("PLANETARY ANOMALY DETECTION PIPELINE")
+    print("Technosignature Search via Machine Learning")
+    print("="*60 + "\n")
+    
+    # Initialize configuration
+    config = Config()
+    
+    # Initialize pipeline
+    pipeline = AnomalyDetectionPipeline(config)
+    
+    # Step 1: Train on natural Earth features
+    pipeline.train()
+    
+    # Step 2: Validate on known anthropogenic features
+    pipeline.validate_on_known_features()
+    
+    # Step 3: Analyze planetary surfaces
+    mars_results = pipeline.analyze_planetary_surface("Mars", config.MARS_PATH)
+    moon_results = pipeline.analyze_planetary_surface("Moon", config.MOON_PATH)
+    
+    # Step 4: Visualize results
+    if mars_results:
+        pipeline.visualize_top_anomalies(mars_results)
+    if moon_results:
+        pipeline.visualize_top_anomalies(moon_results)
+    
+    print("="*60)
+    print("PIPELINE COMPLETE")
+    print("="*60)
+    print("\nNext steps:")
+    print("1. Review anomaly catalogs in the results/ directory")
+    print("2. Expert review of top-ranked anomalies")
+    print("3. Plan targeted follow-up observations if needed")
+    print("\nNull results still advance SETI by refining search methods!")
+
+if __name__ == "__main__":
+    main()
