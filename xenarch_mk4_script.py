@@ -237,7 +237,7 @@ class ChipExtractor:
         self.chip_size = chip_size
         self.overlap = overlap
         
-    def extract_grid(self, image_path: str, output_dir: str) -> List[Dict]:
+    def extract_grid(self, image_path: str, output_dir: str, max_size_mb: float = None) -> List[Dict]:
         """Extract regular grid of chips"""
         output_path = Path(output_dir)
         output_path.mkdir(parents=True, exist_ok=True)
@@ -250,7 +250,7 @@ class ChipExtractor:
             
             chip_id = 0
             total_size_bytes = 0
-            max_size_bytes = 10 * 1024 * 1024  # 10 MB limit
+            max_size_bytes = max_size_mb * 1024 * 1024 if max_size_mb else float('inf')
             
             for y in range(0, height - self.chip_size, stride):
                 for x in range(0, width - self.chip_size, stride):
@@ -266,7 +266,8 @@ class ChipExtractor:
                         continue
                     
                     # Save chip
-                    chip_filename = f"chip_{chip_id:04d}.tif"
+                    source_stem = Path(image_path).stem
+                    chip_filename = f"{source_stem}_chip_{chip_id:04d}.tif"
                     chip_path = output_path / chip_filename
                     
                     window_transform = src.window_transform(window)
@@ -689,34 +690,68 @@ def main():
     
     logger.info(f"Configuration: {json.dumps(config, indent=2)}")
     
-    # Step 1: Load image
-    logger.info("\n[1/6] Loading lunar image...")
-    lro = LROAdapter(data_dir=f"{config['data_dir']}/raw/lro")
-    image_path = lro.download_example_nac()
-    metadata = lro.extract_metadata(image_path)
+    # Step 1 & 2: Load local images and extract chips
+    logger.info("\n[1/6] Extracting training chips from 'training data' folder...")
+    training_data_dir = Path("training data")
+    training_chips_dir = Path(config['data_dir']) / "processed" / "training_chips"
+    training_chips_dir.mkdir(parents=True, exist_ok=True)
     
-    # Step 2: Extract chips
-    logger.info("\n[2/6] Extracting training chips...")
     extractor = ChipExtractor(chip_size=config['chip_size'], overlap=0.0)
-    chips_dir = f"{config['data_dir']}/processed/chips"
-    chips_metadata = extractor.extract_grid(image_path, chips_dir)
+    all_training_chips = []
     
-    # Step 3: Generate synthetic labels (for validation purposes)
-    logger.info("\n[3/6] Generating synthetic labels (for validation)...")
-    annotator = SyntheticAnnotator()
-    labels_df = annotator.generate_labels(chips_metadata, image_path)
-    labels_df.to_csv(f"{config['data_dir']}/labels.csv", index=False)
+    for img_file in training_data_dir.glob("*"):
+        if img_file.suffix.lower() in ['.png', '.jpg', '.jpeg', '.tif', '.tiff']:
+            logger.info(f"Processing training image: {img_file.name}")
+            chips = extractor.extract_grid(str(img_file), str(training_chips_dir))
+            all_training_chips.extend(chips)
     
-    logger.info(f"\nLabel distribution:")
-    logger.info(f"  Natural: {(labels_df['category'] == 'natural').sum()}")
-    logger.info(f"  Artificial: {(labels_df['category'] == 'artificial').sum()}")
+    chips_metadata = all_training_chips
+    
+    logger.info("\n[2/6] Extracting test chips from 'Test data' folder (10MB limit)...")
+    test_data_dir = Path("Test data")
+    test_chips_dir = Path(config['data_dir']) / "processed" / "test_chips"
+    test_chips_dir.mkdir(parents=True, exist_ok=True)
+    
+    test_chips_metadata = []
+    for img_file in test_data_dir.glob("*"):
+        if img_file.suffix.lower() in ['.png', '.jpg', '.jpeg', '.tif', '.tiff']:
+            logger.info(f"Processing test image: {img_file.name}")
+            chips = extractor.extract_grid(str(img_file), str(test_chips_dir), max_size_mb=10.0)
+            test_chips_metadata.extend(chips)
+            break # Only process first image in test data as per request or just one
+    
+    # Step 3: Labels
+    # For training, we assume all training data is "natural"
+    training_labels = pd.DataFrame([{
+        'chip_id': c['chip_id'],
+        'chip_path': c['chip_path'],
+        'category': 'natural',
+        'subcategory': 'training',
+        'confidence': 1.0,
+        'center_lon': c['center_lon'],
+        'center_lat': c['center_lat']
+    } for c in all_training_chips])
+    
+    # For testing, we don't know, but we'll label them as 'test' to monitor
+    test_labels = pd.DataFrame([{
+        'chip_id': c['chip_id'],
+        'chip_path': c['chip_path'],
+        'category': 'test',
+        'subcategory': 'test_data',
+        'confidence': 1.0,
+        'center_lon': c['center_lon'],
+        'center_lat': c['center_lat']
+    } for c in test_chips_metadata])
+    
+    training_labels.to_csv(f"{config['data_dir']}/training_labels.csv", index=False)
+    test_labels.to_csv(f"{config['data_dir']}/test_labels.csv", index=False)
     
     # Step 4: Train autoencoder ONLY on natural terrain
     logger.info(f"\n[4/6] Training autoencoder on NATURAL terrain only...")
     logger.info("(Artificial samples held out for validation)")
     
     # Create dataset with ONLY natural samples
-    train_dataset = LunarChipDataset(labels_df, natural_only=True)
+    train_dataset = LunarChipDataset(training_labels, natural_only=True)
     train_loader = DataLoader(
         train_dataset, 
         batch_size=config['batch_size'], 
@@ -747,8 +782,8 @@ def main():
     # Step 5: Detect anomalies on ALL data
     logger.info("\n[5/6] Running anomaly detection on all chips...")
     
-    # Create test dataset with ALL samples (natural + artificial)
-    test_dataset = LunarChipDataset(labels_df, natural_only=False)
+    # Create test dataset with test samples
+    test_dataset = LunarChipDataset(test_labels, natural_only=False)
     test_loader = DataLoader(
         test_dataset, 
         batch_size=config['batch_size'], 
@@ -763,38 +798,12 @@ def main():
     )
     
     # Add scores to dataframe
-    labels_df['anomaly_score'] = errors
-    labels_df['anomaly_threshold'] = threshold
-    labels_df['is_anomaly'] = errors > threshold
+    test_labels['anomaly_score'] = errors
+    test_labels['anomaly_threshold'] = threshold
+    test_labels['is_anomaly'] = errors > threshold
     
     # Save results
-    labels_df.to_csv(f"{config['data_dir']}/anomaly_results.csv", index=False)
-    
-    # Step 6: Evaluate and visualize
-    logger.info("\n[6/6] Evaluating results...")
-    
-    # Calculate detection rates
-    natural_flagged = labels_df[labels_df['category'] == 'natural']['is_anomaly'].mean()
-    artificial_flagged = labels_df[labels_df['category'] == 'artificial']['is_anomaly'].mean()
-    
-    natural_mean_score = labels_df[labels_df['category'] == 'natural']['anomaly_score'].mean()
-    artificial_mean_score = labels_df[labels_df['category'] == 'artificial']['anomaly_score'].mean()
-    
-    logger.info("\n" + "="*70)
-    logger.info("RESULTS: The 'Apollo Test'")
-    logger.info("="*70)
-    logger.info(f"Natural samples flagged as anomalies: {natural_flagged*100:.1f}%")
-    logger.info(f"Artificial samples flagged as anomalies: {artificial_flagged*100:.1f}%")
-    logger.info(f"\nMean reconstruction error:")
-    logger.info(f"  Natural: {natural_mean_score:.6f}")
-    logger.info(f"  Artificial: {artificial_mean_score:.6f}")
-    logger.info(f"  Ratio: {artificial_mean_score/natural_mean_score:.2f}x higher")
-    
-    if artificial_mean_score > natural_mean_score:
-        logger.success("\n✓ SUCCESS: Model successfully flags 'artificial' features as anomalous!")
-        logger.success("  Model learned natural geology and detected outliers.")
-    else:
-        logger.warning("\n✗ Model needs tuning: artificial features not clearly separated")
+    test_labels.to_csv(f"{config['data_dir']}/anomaly_results.csv", index=False)
     
     # Generate visualizations
     logger.info("\nGenerating visualizations...")
@@ -802,22 +811,22 @@ def main():
     
     viz.plot_training_curve(train_losses)
     viz.plot_reconstruction_examples(model, test_dataset, device=config['device'])
-    viz.plot_anomaly_distribution(labels_df)
-    viz.plot_top_anomalies(labels_df)
+    viz.plot_anomaly_distribution(test_labels)
+    viz.plot_top_anomalies(test_labels)
     
     # Final summary
     logger.info("\n" + "="*70)
     logger.info("PIPELINE COMPLETE!")
     logger.info("="*70)
-    logger.info(f"✓ Processed image with {len(chips_metadata)} chips")
-    logger.info(f"✓ Trained on {(labels_df['category'] == 'natural').sum()} natural samples")
-    logger.info(f"✓ Detected {labels_df['is_anomaly'].sum()} anomalies")
+    logger.info(f"✓ Processed {len(all_training_chips)} training chips")
+    logger.info(f"✓ Processed {len(test_chips_metadata)} test chips")
+    logger.info(f"✓ Detected {test_labels['is_anomaly'].sum()} anomalies in test data")
     logger.info(f"✓ Results saved to: {config['data_dir']}/anomaly_results.csv")
     logger.info(f"✓ Visualizations saved to: ./results/")
     logger.info("\nNext steps:")
     logger.info("  1. Review top anomalies in results/top_anomalies.png")
-    logger.info("  2. Apply to real lunar imagery with Apollo landing sites")
-    logger.info("  3. Refine threshold based on expert geological review")
+    logger.info("  2. Apply to more real lunar imagery")
+    logger.info("  3. Refine threshold based on expert review")
 
 
 if __name__ == "__main__":
