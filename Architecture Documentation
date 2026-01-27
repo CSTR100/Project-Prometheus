@@ -1,0 +1,513 @@
+🏗️ Architecture Documentation
+System Overview
+This document provides a comprehensive technical overview of the Lunar Anomaly Detection Pipeline, including architectural decisions, implementation details, and theoretical foundations.
+Table of Contents
+
+System Architecture
+Pipeline Stages
+Model Architecture
+Mathematical Foundations
+Implementation Details
+Performance Considerations
+Future Enhancements
+
+
+System Architecture
+High-Level Design
+┌─────────────────────────────────────────────────────────────────┐
+│                     DATA INGESTION LAYER                         │
+│  ┌──────────────┐  ┌──────────────┐  ┌─────────────────────┐  │
+│  │ LRO Adapter  │→ │ Chip Extract │→ │ Synthetic Annotator │  │
+│  └──────────────┘  └──────────────┘  └─────────────────────┘  │
+└─────────────────────────────────────────────────────────────────┘
+                              ↓
+┌─────────────────────────────────────────────────────────────────┐
+│                      TRAINING LAYER                              │
+│  ┌──────────────────────────────────────────────────────────┐  │
+│  │              Autoencoder Training                         │  │
+│  │  • Natural features only                                  │  │
+│  │  • Reconstruction objective                               │  │
+│  │  • Latent space compression                              │  │
+│  └──────────────────────────────────────────────────────────┘  │
+└─────────────────────────────────────────────────────────────────┘
+                              ↓
+┌─────────────────────────────────────────────────────────────────┐
+│                     DETECTION LAYER                              │
+│  ┌──────────────┐  ┌──────────────┐  ┌─────────────────────┐  │
+│  │ Reconstruction│→ │ Error Calc  │→ │ Threshold Detection │  │
+│  └──────────────┘  └──────────────┘  └─────────────────────┘  │
+└─────────────────────────────────────────────────────────────────┘
+                              ↓
+┌─────────────────────────────────────────────────────────────────┐
+│                    VISUALIZATION LAYER                           │
+│  ┌──────────────┐  ┌──────────────┐  ┌─────────────────────┐  │
+│  │  Heatmaps    │  │ Top Anomalies│  │   Training Curves   │  │
+│  └──────────────┘  └──────────────┘  └─────────────────────┘  │
+└─────────────────────────────────────────────────────────────────┘
+Design Principles
+
+Unsupervised Learning: No labeled anomalies required
+Modularity: Each component is independently testable
+Scalability: Supports multiple resolutions and batch processing
+Reproducibility: Deterministic results with seed control
+Extensibility: Easy to add new model architectures
+
+
+Pipeline Stages
+1. Data Ingestion
+LROAdapter
+Purpose: Download and manage lunar imagery from NASA sources.
+Key Methods:
+pythondownload_apollo_landing_site() → str
+  └─ Returns path to Apollo 11 landing site imagery
+  └─ Contains actual human artifacts for validation
+
+download_generic_lunar_imagery() → str
+  └─ Returns path to natural lunar terrain
+  └─ No human artifacts, used for training
+
+extract_metadata(image_path: str) → Dict
+  └─ Extracts geospatial metadata from GeoTIFF
+Data Sources:
+
+NASA TREK WMS Service
+LRO NAC (Narrow Angle Camera) - 0.5m resolution
+LRO WAC (Wide Angle Camera) - 100m resolution
+
+ChipExtractor
+Purpose: Extract fixed-size chips from large images.
+Algorithm:
+pythonFor each image:
+    For y in range(0, height - chip_size, stride):
+        For x in range(0, width - chip_size, stride):
+            Extract chip at (x, y)
+            If variance > threshold:
+                Save chip with geospatial metadata
+Parameters:
+
+chip_size: 64, 128, or 256 pixels
+overlap: 0.0 to 0.5 (fraction of chip_size)
+max_size_mb: Optional limit on total extracted data
+
+Optimization: Skips low-variance chips (empty or uniform regions)
+SyntheticAnnotator
+Purpose: Create heuristic labels for validation (optional).
+Heuristics:
+
+Edge Detection: Sobel filters on chip
+Linear Feature Score: Alignment of edges along rows/columns
+Circular Feature Score: Radial intensity patterns (craters)
+
+Note: These labels are NOT used for training, only for validation/analysis.
+
+2. Model Architecture
+Standard Autoencoder (Mk4)
+Input: [batch, 1, H, W]  (H=64 or 128, W=64 or 128)
+                ↓
+        ┌───────────────┐
+        │    ENCODER    │
+        ├───────────────┤
+        │ Conv2d (32)   │ → stride=2 → H/2, W/2
+        │ Conv2d (64)   │ → stride=2 → H/4, W/4
+        │ Conv2d (128)  │ → stride=2 → H/8, W/8
+        │ Conv2d (256)  │ → stride=2 → H/16, W/16
+        │ Flatten       │
+        │ Linear        │ → latent_dim (32-128)
+        └───────────────┘
+                ↓
+        [batch, latent_dim]  ← Compressed representation
+                ↓
+        ┌───────────────┐
+        │    DECODER    │
+        ├───────────────┤
+        │ Linear        │
+        │ Unflatten     │ → [batch, 256, H/16, W/16]
+        │ ConvT2d (128) │ → stride=2 → H/8, W/8
+        │ ConvT2d (64)  │ → stride=2 → H/4, W/4
+        │ ConvT2d (32)  │ → stride=2 → H/2, W/2
+        │ ConvT2d (1)   │ → stride=2 → H, W
+        │ Sigmoid       │
+        └───────────────┘
+                ↓
+Output: [batch, 1, H, W]  (Reconstructed)
+Layer Details:
+
+Batch Normalization: After each conv layer for stable training
+Activation: ReLU in encoder/decoder, Sigmoid at output
+Kernel Size: 3×3 for all convolutions
+Padding: 1 to preserve spatial dimensions
+
+Variational Autoencoder (Mk5)
+Key Difference: Probabilistic latent space
+Encoder outputs:
+├─ mu (mean): [batch, latent_dim]
+└─ logvar (log variance): [batch, latent_dim]
+
+Reparameterization Trick:
+z = mu + exp(0.5 * logvar) * epsilon
+where epsilon ~ N(0, 1)
+
+Loss Function:
+L = Reconstruction_Loss + β * KLD_Loss
+
+KLD_Loss = -0.5 * sum(1 + logvar - mu² - exp(logvar))
+Advantages over Standard AE:
+
+Smooth Latent Space: Forces continuous distribution
+Better Generalization: Cannot memorize specific examples
+Uncertainty Quantification: Variance indicates confidence
+Anomaly Separation: Natural features cluster, anomalies are outliers
+
+
+3. Training Strategy
+Objective Function
+Mk4 (Standard AE):
+L = MSE(X, X̂)
+  = (1/N) * Σ(X - X̂)²
+Mk5 (VAE):
+L = MSE(X, X̂) + β * KLD(q(z|X) || p(z))
+Where:
+
+X: Original image
+X̂: Reconstructed image
+β: KLD weight (typically 0.001 to 0.01)
+q(z|X): Learned posterior distribution
+p(z): Prior distribution N(0, I)
+
+Optimization
+Optimizer: Adam
+
+Learning rate: 0.001
+β1: 0.9, β2: 0.999
+Weight decay: 1e-5 (optional L2 regularization)
+
+Learning Rate Schedule:
+pythonReduceLROnPlateau(
+    optimizer,
+    mode='min',
+    factor=0.5,
+    patience=3
+)
+Early Stopping:
+
+Monitor validation loss
+Patience: 5 epochs
+Prevents overfitting on training set
+
+Data Filtering
+Critical: Train ONLY on natural features
+pythontrain_dataset = LunarChipDataset(
+    labels_df[labels_df['category'] == 'natural']
+)
+This ensures the model learns what "normal" geology looks like.
+
+4. Anomaly Detection
+Reconstruction Error Calculation
+For each test chip:
+pythonreconstruction_error = mean((X - X̂)²)  # Per-pixel MSE
+For VAE, can also use:
+python# Probabilistic error
+reconstruction_error = MSE + λ * (-log P(z))
+Where P(z) is the probability density of the latent code under the learned distribution.
+Threshold Selection
+Method: Percentile-based
+pythonthreshold = percentile(errors_on_natural_data, p)
+Parameter p tuning:
+
+p = 90: High sensitivity (more detections, more false positives)
+p = 95: Balanced (recommended)
+p = 97: High precision (fewer false positives, may miss subtle anomalies)
+
+Alternative Thresholds
+Statistical Methods:
+python# Method 1: Standard deviations
+threshold = mean(errors) + k * std(errors)  # k=2 or 3
+
+# Method 2: MAD (Median Absolute Deviation)
+median_error = median(errors)
+mad = median(abs(errors - median_error))
+threshold = median_error + k * mad  # k=3 to 5
+
+Mathematical Foundations
+Information Bottleneck Principle
+The autoencoder creates an information bottleneck:
+I(X; Z) ≤ latent_dim * log(2)
+Where:
+
+I(X; Z): Mutual information between input and latent code
+Limited capacity forces model to learn only essential features
+
+Consequence:
+
+Low latent_dim → Can only encode common patterns
+High latent_dim → Can memorize rare patterns (overfitting)
+
+Manifold Learning
+Hypothesis: Natural geological features lie on a low-dimensional manifold in pixel space.
+Natural features: M ⊂ ℝ^(H×W)
+dim(M) << H×W
+The autoencoder learns to:
+
+Encoder: Project data onto manifold → φ: ℝ^(H×W) → ℝ^d
+Decoder: Reconstruct from manifold → ψ: ℝ^d → ℝ^(H×W)
+
+Anomalies: Points far from the manifold → High reconstruction error
+Latent Space Geometry (VAE)
+VAE enforces Gaussian prior:
+p(z) = N(0, I)
+q(z|x) = N(μ(x), Σ(x))
+Effect: Creates a smooth, continuous latent space where:
+
+Similar inputs → Similar latent codes
+Interpolation is meaningful
+Natural features form tight clusters
+Anomalies are outliers (low probability density)
+
+
+Implementation Details
+Memory Management
+For 128×128 chips:
+Memory per chip: 128 × 128 × 1 × 4 bytes = 64 KB
+Batch size 16: ~1 MB input data
+Model activations: ~50-100 MB (depends on architecture)
+Total GPU memory: ~2-4 GB (with gradients)
+Optimization strategies:
+
+Reduce batch size if OOM errors occur
+Use mixed precision training (float16)
+Gradient checkpointing for very deep models
+Process in multiple passes for large datasets
+
+Computational Complexity
+Training:
+Forward pass: O(batch_size × channels × H × W × filters)
+Backward pass: ~2× forward pass
+Per epoch: O(num_chips / batch_size × complexity_per_batch)
+For 128×128, latent_dim=64:
+
+~10-15 min/epoch on CPU
+~1-2 min/epoch on GPU (NVIDIA RTX 3080)
+
+Inference:
+Per chip: ~10-50 ms on GPU
+1000 chips: ~10-50 seconds
+Numerical Stability
+Normalization:
+python# Input normalization
+image = (image - image.min()) / (image.max() - image.min() + 1e-8)
+VAE log variance:
+python# Clamp to prevent numerical overflow
+logvar = torch.clamp(logvar, min=-10, max=10)
+Loss weighting:
+python# Balance reconstruction and KLD
+loss = reconstruction_loss + beta * kld_loss
+# beta typically 0.001 to 0.01
+
+Performance Considerations
+Hyperparameter Sensitivity Analysis
+ParameterRangeImpact on Detectionlatent_dim16-256Critical: Too high = overfitting, too low = underfittingchip_size64-256Higher = more detail but slowernum_epochs10-50More training helps, diminishing returns after 20-30threshold_percentile85-99Lower = more sensitive, higher = more specificlearning_rate1e-4 to 1e-2Standard 1e-3 works wellbatch_size4-64Larger = faster, limited by GPU memory
+Optimal Configurations
+For Maximum Detection (High Sensitivity):
+python{
+    'latent_dim': 32,
+    'chip_size': 128,
+    'num_epochs': 25,
+    'threshold_percentile': 90,
+    'dropout_rate': 0.3,
+    'learning_rate': 0.0005
+}
+For Minimum False Positives (High Precision):
+python{
+    'latent_dim': 64,
+    'chip_size': 128,
+    'num_epochs': 30,
+    'threshold_percentile': 97,
+    'dropout_rate': 0.1,
+    'learning_rate': 0.001
+}
+For Fast Prototyping:
+python{
+    'latent_dim': 64,
+    'chip_size': 64,
+    'num_epochs': 10,
+    'batch_size': 32
+}
+
+Data Flow Diagrams
+Training Phase
+Raw Images (GeoTIFF)
+    ↓
+[ChipExtractor]
+    ↓
+Chips (64×64 or 128×128)
+    ↓
+[Filter: natural only]
+    ↓
+Training Dataset (PyTorch)
+    ↓
+[DataLoader: batch_size=16]
+    ↓
+Autoencoder Model
+    ├─ Forward pass
+    ├─ Calculate loss
+    ├─ Backward pass
+    └─ Update weights
+    ↓
+Trained Model (.pth)
+Inference Phase
+Test Images
+    ↓
+[ChipExtractor]
+    ↓
+Test Chips
+    ↓
+[Trained Autoencoder]
+    ├─ Encode
+    ├─ Decode
+    └─ Calculate error
+    ↓
+Reconstruction Errors
+    ↓
+[Compare to threshold]
+    ↓
+Anomaly Labels
+    ↓
+[Visualizer]
+    ↓
+Results (PNG, CSV)
+
+Code Organization
+Class Hierarchy
+LROAdapter
+├─ download_apollo_landing_site()
+├─ download_generic_lunar_imagery()
+└─ extract_metadata()
+
+ChipExtractor
+└─ extract_grid()
+
+SyntheticAnnotator
+├─ generate_labels()
+├─ _detect_edges()
+├─ _detect_linear_features()
+└─ _detect_circular_features()
+
+AdaptiveConvolutionalAutoencoder (nn.Module)
+├─ __init__()
+├─ forward()
+└─ get_reconstruction_error()
+
+LunarChipDataset (Dataset)
+├─ __len__()
+└─ __getitem__()
+
+AutoencoderTrainer
+├─ train_epoch()
+└─ detect_anomalies()
+
+HighResVisualizer
+├─ plot_reconstruction_examples()
+├─ plot_anomaly_distribution()
+├─ plot_training_curve()
+└─ plot_top_anomalies()
+Dependency Graph
+rasterio → ChipExtractor → LunarChipDataset
+                ↓
+pytorch → AdaptiveConvolutionalAutoencoder
+                ↓
+        AutoencoderTrainer
+                ↓
+matplotlib → HighResVisualizer
+
+Future Enhancements
+Planned Improvements
+
+Multi-Scale Analysis
+
+Process at multiple resolutions simultaneously
+Combine detection from 64×64, 128×128, 256×256
+Improved detection of features at different scales
+
+
+Attention Mechanisms
+
+python   class AttentionAutoencoder(nn.Module):
+       def __init__(self):
+           self.attention = SelfAttention(dim=256)
+           # Focuses on discriminative regions
+
+Ensemble Methods
+
+Train multiple models with different random seeds
+Average predictions for robustness
+Uncertainty estimation via prediction variance
+
+
+Transfer Learning
+
+Pre-train on Earth satellite imagery
+Fine-tune on lunar data
+Leverage larger datasets
+
+
+Temporal Analysis
+
+Compare images from different time periods
+Detect changes (new artifacts, degradation)
+Track rover movements
+
+
+3D Reconstruction
+
+Use stereo imagery pairs
+Height information improves detection
+Distinguish raised structures from markings
+
+
+
+Research Directions
+
+Adversarial Training: Make model robust to natural variations
+Few-Shot Learning: Learn from minimal examples of anomalies
+Explainability: Visualize which features drive detections
+Real-Time Processing: Optimize for on-board spacecraft processing
+
+
+References
+Theoretical Background
+
+Kingma & Welling (2014) - "Auto-Encoding Variational Bayes"
+Goodfellow et al. (2016) - "Deep Learning" (Ch. 14: Autoencoders)
+Tishby & Zaslavsky (2015) - "Deep Learning and the Information Bottleneck Principle"
+
+Application Domain
+
+NASA LRO Mission Documentation
+Robinson et al. (2010) - "Lunar Reconnaissance Orbiter Camera"
+Planetary surface analysis methodologies
+
+Implementation
+
+PyTorch Documentation
+Rasterio GeoTIFF Processing
+Modern computer vision best practices
+
+
+Appendix: Common Issues & Solutions
+Issue: Model memorizes training data
+Solution: Reduce latent_dim, add dropout, increase regularization
+Issue: Too many false positives
+Solution: Increase threshold_percentile, increase latent_dim
+Issue: Missing obvious anomalies
+Solution: Decrease threshold_percentile, reduce latent_dim
+Issue: Training is slow
+Solution: Use GPU, reduce chip_size, increase batch_size
+Issue: Out of memory errors
+Solution: Reduce batch_size, reduce chip_size, use gradient checkpointing
+Issue: Poor reconstruction quality
+Solution: Increase num_epochs, reduce learning_rate, add batch normalization
+
+This architecture document is maintained alongside the codebase and updated with each major version release.
+Version: 1.0
+Last Updated: January 2026
+Authors: Project Contributors
