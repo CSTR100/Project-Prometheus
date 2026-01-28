@@ -45,6 +45,7 @@ python anomaly_detection_pipeline_hires.py
 
 # Run Mk5 with Variational Autoencoder
 python xenarch_mk5_script.py
+```
 📁 Project Structure
 lunar-anomaly-detection/
 ├── anomaly_detection_pipeline.py     # Main Mk4 pipeline (64×64)
@@ -69,6 +70,7 @@ lunar-anomaly-detection/
 │   └── training_curve.png
 │
 └── logs/                              # Training logs
+```
 🔬 How It Works
 1. Training Phase
 The model trains exclusively on natural geological features:
