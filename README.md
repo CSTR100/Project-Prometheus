@@ -49,8 +49,8 @@ python anomaly_detection_pipeline_hires.py
 # Run Mk5 with Variational Autoencoder
 python xenarch_mk5_script.py
 ```
-```
 📁 Project Structure
+```
 lunar-anomaly-detection/
 ├── anomaly_detection_pipeline.py     # Main Mk4 pipeline (64×64)
 ├── anomaly_detection_pipeline_hires.py  # High-res version (128×128)
