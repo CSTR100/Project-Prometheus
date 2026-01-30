@@ -3,6 +3,7 @@ An unsupervised machine learning system for detecting artificial structures and 
 Show Image
 Show Image
 Show Image
+
 🎯 Overview
 This project implements a novel approach to technosignature detection on lunar and planetary surfaces. By training exclusively on natural geological features, the system learns what "normal" looks like and flags anything anomalous - including artificial structures like landing sites, rovers, and human-made equipment.
 Key Features
@@ -22,6 +23,7 @@ Geological anomaly identification
 Change detection in satellite imagery
 
 🚀 Quick Start
+
 Prerequisites
 bashPython 3.8+
 CUDA-capable GPU (optional, but recommended)
@@ -31,6 +33,7 @@ git clone https://github.com/yourusername/lunar-anomaly-detection.git
 cd lunar-anomaly-detection
 
 # Create virtual environment
+```
 python -m venv venv
 source venv/bin/activate  # On Windows: venv\Scripts\activate
 
@@ -45,6 +48,7 @@ python anomaly_detection_pipeline_hires.py
 
 # Run Mk5 with Variational Autoencoder
 python xenarch_mk5_script.py
+```
 ```
 📁 Project Structure
 lunar-anomaly-detection/
