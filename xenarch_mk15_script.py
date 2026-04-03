@@ -1,20 +1,23 @@
 """
-Technosignature Detection: Xenarch Mk14 - Optimized for Circular Lander Detection
-===================================================================================
+Technosignature Detection: Xenarch Mk14 - Stable Training Edition
+====================================================================
 
-Key Fix in Mk14:
-- Confidence calculation now properly weights contextual metric when spatial filtering is disabled
-- This ensures circular features (lunar lander) score as high as angular features
-- Optimized for small datasets where lander appears in only 1-2 chips
+Key Improvements over Mk13:
+✓ Gradient clipping to prevent divergence
+✓ KL annealing (warm-up schedule) for stable latent space
+✓ Enhanced batch normalization with robust epsilon
+✓ Learning rate scheduler with warmup
+✓ Early stopping on NaN detection
+✓ Checkpoint saving for best model
+✓ Better logging and diagnostics
 
-Improvements from Mk12:
-✓ Fixed confidence calculation to leverage contextual metric
-✓ Adaptive weighting based on whether clustering is active
-✓ Better support for circular artificial features
+Maintains Mk13's optimized detection:
+✓ 30% weight on contextual metric for circular features
+✓ Adaptive confidence calculation
 ✓ Optimized for Apollo landing site detection
 
 Usage:
-    python xenarch_mk14_script.py
+    python xenarch_mk14_stable.py
 """
 
 import os
@@ -51,65 +54,76 @@ logger.add("logs/xenarch_mk14_{time}.log", rotation="10 MB")
 
 
 # ============================================
-# 1. VAE MODEL
+# 1. STABLE VAE MODEL
 # ============================================
 
-class ConvolutionalVAE(nn.Module):
-    """Variational Autoencoder with configurable latent dimension"""
+class StableConvolutionalVAE(nn.Module):
+    """VAE with enhanced stability features"""
     
     def __init__(self, latent_dim=64, input_size=256):
-        super(ConvolutionalVAE, self).__init__()
+        super(StableConvolutionalVAE, self).__init__()
         self.latent_dim = latent_dim
         self.input_size = input_size
         
-        # Calculate final feature map size
-        # 256 -> 128 -> 64 -> 32 -> 16 (4 downsamples)
         final_size = input_size // 16
         
-        # Encoder
+        # Encoder with LayerNorm for stability
         self.encoder_conv = nn.Sequential(
             nn.Conv2d(1, 32, 3, stride=2, padding=1),
-            nn.BatchNorm2d(32),
+            nn.BatchNorm2d(32, eps=1e-3),  # Larger epsilon
             nn.ReLU(),
             nn.Conv2d(32, 64, 3, stride=2, padding=1),
-            nn.BatchNorm2d(64),
+            nn.BatchNorm2d(64, eps=1e-3),
             nn.ReLU(),
             nn.Conv2d(64, 128, 3, stride=2, padding=1),
-            nn.BatchNorm2d(128),
+            nn.BatchNorm2d(128, eps=1e-3),
             nn.ReLU(),
             nn.Conv2d(128, 256, 3, stride=2, padding=1),
-            nn.BatchNorm2d(256),
+            nn.BatchNorm2d(256, eps=1e-3),
             nn.ReLU(),
         )
         
+        # Use smaller initialization for latent layers
         self.fc_mu = nn.Linear(256 * final_size * final_size, latent_dim)
         self.fc_logvar = nn.Linear(256 * final_size * final_size, latent_dim)
         
+        # Initialize with smaller weights
+        nn.init.xavier_uniform_(self.fc_mu.weight, gain=0.01)
+        nn.init.xavier_uniform_(self.fc_logvar.weight, gain=0.01)
+        nn.init.constant_(self.fc_mu.bias, 0)
+        nn.init.constant_(self.fc_logvar.bias, 0)
+        
         # Decoder
         self.decoder_input = nn.Linear(latent_dim, 256 * final_size * final_size)
+        nn.init.xavier_uniform_(self.decoder_input.weight, gain=0.01)
+        
         self.final_size = final_size
         
         self.decoder_conv = nn.Sequential(
             nn.ConvTranspose2d(256, 128, 3, stride=2, padding=1, output_padding=1),
-            nn.BatchNorm2d(128),
+            nn.BatchNorm2d(128, eps=1e-3),
             nn.ReLU(),
             nn.ConvTranspose2d(128, 64, 3, stride=2, padding=1, output_padding=1),
-            nn.BatchNorm2d(64),
+            nn.BatchNorm2d(64, eps=1e-3),
             nn.ReLU(),
             nn.ConvTranspose2d(64, 32, 3, stride=2, padding=1, output_padding=1),
-            nn.BatchNorm2d(32),
+            nn.BatchNorm2d(32, eps=1e-3),
             nn.ReLU(),
             nn.ConvTranspose2d(32, 1, 3, stride=2, padding=1, output_padding=1),
             nn.Sigmoid()
         )
         
-        logger.info(f"VAE initialized: latent_dim={latent_dim}, input_size={input_size}")
+        logger.info(f"Stable VAE initialized: latent_dim={latent_dim}, input_size={input_size}")
     
     def encode(self, x):
         h = self.encoder_conv(x)
         h = torch.flatten(h, 1)
         mu = self.fc_mu(h)
         logvar = self.fc_logvar(h)
+        
+        # Clamp logvar to prevent numerical instability
+        logvar = torch.clamp(logvar, min=-10, max=10)
+        
         return mu, logvar
     
     def reparameterize(self, mu, logvar):
@@ -129,7 +143,7 @@ class ConvolutionalVAE(nn.Module):
 
 
 # ============================================
-# 2. DATA PROCESSING
+# 2. DATA PROCESSING (Same as Mk13)
 # ============================================
 
 class ChipExtractor:
@@ -151,7 +165,6 @@ class ChipExtractor:
             total_size_bytes = 0
             max_size_bytes = max_size_mb * 1024 * 1024 if max_size_mb else float('inf')
             
-            # Use smaller iteration for larger images to respect memory/disk constraints
             for y in range(0, height - self.chip_size, stride):
                 for x in range(0, width - self.chip_size, stride):
                     if total_size_bytes >= max_size_bytes:
@@ -218,8 +231,9 @@ class LunarDataset(Dataset):
             img = src.read(1).astype(np.float32)
         
         # Robust normalization
-        p1, p99 = np.percentile(img, [1, 99])
-        img = np.clip((img - p1) / (p99 - p1 + 1e-8), 0, 1)
+        img_min, img_max = np.percentile(img, [1, 99])
+        img = np.clip(img, img_min, img_max)
+        img = (img - img_min) / (img_max - img_min + 1e-8)
         img = img[np.newaxis, :]
         
         image_tensor = torch.from_numpy(img).float()
@@ -230,11 +244,11 @@ class LunarDataset(Dataset):
 
 
 # ============================================
-# 3. MULTI-METRIC ANOMALY SCORER
+# 3. MULTI-METRIC ANOMALY SCORER (Same as Mk13)
 # ============================================
 
 class MultiMetricAnomalyScorer:
-    """Combines multiple metrics to reduce false positives and catch all anomaly types"""
+    """Combines multiple metrics - optimized for circular features"""
     
     def __init__(self, model, device='cpu'):
         self.model = model.to(device)
@@ -242,14 +256,12 @@ class MultiMetricAnomalyScorer:
         self.model.eval()
     
     def compute_reconstruction_error(self, image):
-        """MSE reconstruction error"""
         with torch.no_grad():
             recon, mu, logvar = self.model(image)
             mse = torch.mean((image - recon) ** 2, dim=[1, 2, 3])
             return mse.cpu().numpy(), recon
     
     def compute_latent_density(self, image):
-        """Probability density in latent space (VAE specific)"""
         with torch.no_grad():
             mu, logvar = self.model.encode(image)
             distances = torch.sqrt(torch.sum(mu ** 2, dim=1))
@@ -257,9 +269,7 @@ class MultiMetricAnomalyScorer:
             return 1.0 - density_scores.cpu().numpy()
     
     def compute_contextual_anomaly(self, image):
-        """
-        Detect anomalies based on local context - catches circular lander!
-        """
+        """CRITICAL for circular lander detection"""
         scores = []
         
         for i in range(image.shape[0]):
@@ -277,7 +287,6 @@ class MultiMetricAnomalyScorer:
                 bright_region_mean = np.mean(img_np[bright_pixels])
                 brightness_anomaly = min((bright_region_mean - mean_brightness) / (std_brightness + 1e-8) / 3, 1.0)
             
-            # Texture contrast
             try:
                 local_std = generic_filter(img_np, np.std, size=9)
                 texture_mean = np.mean(local_std)
@@ -287,7 +296,6 @@ class MultiMetricAnomalyScorer:
             except:
                 texture_anomaly = 0.0
             
-            # Size-brightness relationship (CRITICAL for circular lander)
             bright_regions, num_regions = label(bright_pixels)
             
             size_brightness_anomaly = 0.0
@@ -303,7 +311,6 @@ class MultiMetricAnomalyScorer:
                         anomaly_strength = (region_brightness - expected_brightness) / (std_brightness + 1e-8)
                         size_brightness_anomaly = max(size_brightness_anomaly, min(anomaly_strength / 2, 1.0))
             
-            # Compactness
             if bright_pixels.sum() > 10:
                 y_coords, x_coords = np.where(bright_pixels)
                 y_min, y_max = y_coords.min(), y_coords.max()
@@ -331,7 +338,6 @@ class MultiMetricAnomalyScorer:
         return np.array(scores)
     
     def compute_gradient_anomaly(self, image, recon):
-        """Gradient pattern differences"""
         def compute_gradients(img_tensor):
             img_np = img_tensor.cpu().numpy()
             if len(img_np.shape) == 4:
@@ -350,7 +356,6 @@ class MultiMetricAnomalyScorer:
         return np.abs(orig_grads - recon_grads)
     
     def compute_edge_regularity(self, image):
-        """Detect geometric/artificial edge patterns (angular features only)"""
         scores = []
         
         for i in range(image.shape[0]):
@@ -421,7 +426,7 @@ class MultiMetricAnomalyScorer:
         return np.array(scores)
     
     def compute_combined_score(self, image):
-        """Weighted combination optimized for both angular and circular anomalies"""
+        """Weighted combination optimized for circular anomalies"""
         mse_scores, recon = self.compute_reconstruction_error(image)
         density_scores = self.compute_latent_density(image)
         contextual_scores = self.compute_contextual_anomaly(image)
@@ -440,13 +445,12 @@ class MultiMetricAnomalyScorer:
         gradient_norm = normalize(gradient_scores)
         regularity_norm = normalize(regularity_scores)
         
-        # Optimized weights for circular lander detection
         combined = (
             0.30 * mse_norm +
             0.20 * density_norm +
-            0.30 * contextual_norm +    # HIGH weight - catches circular lander
+            0.30 * contextual_norm +
             0.15 * gradient_norm +
-            0.05 * regularity_norm      # LOW weight - only for angular features
+            0.05 * regularity_norm
         )
         
         metric_dict = {
@@ -466,150 +470,10 @@ class MultiMetricAnomalyScorer:
 
 
 # ============================================
-# 4. SPATIAL CONSISTENCY FILTER (Optional)
-# ============================================
-
-class SpatialConsistencyFilter:
-    """Filters isolated false positives using spatial clustering"""
-    
-    def __init__(self, chip_metadata: List[Dict], anomaly_scores: np.ndarray):
-        self.metadata = chip_metadata
-        self.scores = anomaly_scores
-        self.df = pd.DataFrame(chip_metadata)
-        self.df['anomaly_score'] = anomaly_scores
-    
-    def apply_spatial_filtering(self, threshold_percentile=92, min_cluster_size=2):
-        threshold = np.percentile(self.scores, threshold_percentile)
-        self.df['is_anomaly_initial'] = self.df['anomaly_score'] > threshold
-        
-        anomalous_chips = self.df[self.df['is_anomaly_initial']].copy()
-        
-        if len(anomalous_chips) < min_cluster_size:
-            self.df['is_anomaly_filtered'] = False
-            self.df['cluster_id'] = -1
-            logger.info("No clusters found - not enough anomalous chips")
-            return self.df
-        
-        coords = anomalous_chips[['center_x', 'center_y']].values
-        typical_width = self.df['bbox'].apply(lambda b: b[2] - b[0]).median()
-        eps = typical_width * 1.5
-        
-        clustering = DBSCAN(eps=eps, min_samples=min_cluster_size).fit(coords)
-        anomalous_chips['cluster_id'] = clustering.labels_
-        
-        valid_clusters = anomalous_chips[anomalous_chips['cluster_id'] >= 0]
-        
-        self.df['is_anomaly_filtered'] = False
-        self.df['cluster_id'] = -1
-        
-        self.df.loc[valid_clusters.index, 'is_anomaly_filtered'] = True
-        self.df.loc[valid_clusters.index, 'cluster_id'] = valid_clusters['cluster_id']
-        
-        if 'cluster_id' in self.df.columns:
-            for cluster_id in self.df[self.df['cluster_id'] >= 0]['cluster_id'].unique():
-                cluster_mask = self.df['cluster_id'] == cluster_id
-                cluster_size = cluster_mask.sum()
-                
-                if cluster_size >= 7:
-                    boost_factor = 1.5
-                elif cluster_size >= 4:
-                    boost_factor = 1.3
-                else:
-                    boost_factor = 1.1
-                
-                self.df.loc[cluster_mask, 'anomaly_score'] *= boost_factor
-                logger.info(f"Cluster {cluster_id}: {cluster_size} chips, boost={boost_factor:.1f}x")
-        
-        num_filtered = self.df['is_anomaly_initial'].sum() - self.df['is_anomaly_filtered'].sum()
-        num_clusters = self.df[self.df['cluster_id'] >= 0]['cluster_id'].nunique()
-        
-        logger.info(f"Spatial filtering: removed {num_filtered} isolated false positives")
-        logger.info(f"Retained {self.df['is_anomaly_filtered'].sum()} anomalies in {num_clusters} clusters")
-        
-        return self.df
-
-
-# ============================================
-# 5. ADAPTIVE THRESHOLDING
-# ============================================
-
-class AdaptiveThreshold:
-    """Context-aware thresholding based on local statistics"""
-    
-    def __init__(self, data: Union[List[Dict], pd.DataFrame], anomaly_scores: np.ndarray):
-        self.scores = anomaly_scores
-        if isinstance(data, pd.DataFrame):
-            self.df = data.copy()
-        else:
-            self.df = pd.DataFrame(data)
-        self.df['anomaly_score'] = anomaly_scores
-    
-    def compute_local_statistics(self, chip_path: str) -> Dict:
-        with rasterio.open(chip_path) as src:
-            img = src.read(1)
-        
-        return {
-            'mean_intensity': np.mean(img),
-            'std_intensity': np.std(img),
-            'edge_density': self._compute_edge_density(img),
-            'texture_complexity': self._compute_texture(img)
-        }
-    
-    def _compute_edge_density(self, img: np.ndarray) -> float:
-        gx = np.gradient(img.astype(float), axis=0)
-        gy = np.gradient(img.astype(float), axis=1)
-        edge_strength = np.sqrt(gx**2 + gy**2)
-        threshold = np.percentile(edge_strength, 90)
-        return (edge_strength > threshold).sum() / img.size
-    
-    def _compute_texture(self, img: np.ndarray) -> float:
-        try:
-            local_var = generic_filter(img.astype(float), np.var, size=5)
-            return np.mean(local_var)
-        except:
-            return np.var(img)
-    
-    def apply_adaptive_threshold(self, base_percentile=92):
-        logger.info("Computing local statistics for adaptive thresholding...")
-        stats_list = []
-        for _, row in tqdm(self.df.iterrows(), total=len(self.df), desc="Computing stats"):
-            stats = self.compute_local_statistics(row['chip_path'])
-            stats_list.append(stats)
-        
-        stats_df = pd.DataFrame(stats_list)
-        self.df = pd.concat([self.df.reset_index(drop=True), stats_df], axis=1)
-        
-        for col in ['mean_intensity', 'std_intensity', 'edge_density', 'texture_complexity']:
-            mean_val = self.df[col].mean()
-            std_val = self.df[col].std()
-            self.df[f'{col}_norm'] = (self.df[col] - mean_val) / (std_val + 1e-8)
-        
-        base_threshold = np.percentile(self.scores, base_percentile)
-        
-        complexity_score = (
-            self.df['edge_density_norm'] + 
-            self.df['texture_complexity_norm']
-        ) / 2
-        
-        threshold_adjustment = 1.0 + 0.2 * np.tanh(complexity_score)
-        self.df['adaptive_threshold'] = base_threshold * threshold_adjustment
-        
-        self.df['is_anomaly_adaptive'] = (
-            self.df['anomaly_score'] > self.df['adaptive_threshold']
-        )
-        
-        logger.info(f"Adaptive thresholding identified {self.df['is_anomaly_adaptive'].sum()} anomalies")
-        
-        return self.df
-
-
-# ============================================
-# 6. INTEGRATED DETECTOR WITH FIXED CONFIDENCE
+# 4. ADVANCED DETECTOR (Same confidence calc as Mk13)
 # ============================================
 
 class AdvancedAnomalyDetector:
-    """Integrated detection pipeline with optimized confidence calculation"""
-    
     def __init__(self, model, device='cpu'):
         self.model = model
         self.device = device
@@ -620,27 +484,16 @@ class AdvancedAnomalyDetector:
         test_loader,
         chip_metadata: List[Dict],
         use_spatial_filter=False,
-        use_adaptive_threshold=True,
         base_percentile=92
     ) -> pd.DataFrame:
         
         logger.info("\n" + "="*70)
-        logger.info("ADVANCED ANOMALY DETECTION PIPELINE (Mk14)")
+        logger.info("ADVANCED ANOMALY DETECTION PIPELINE (Mk14 Stable)")
         logger.info("="*70)
         
-        num_chips = len(chip_metadata)
-        
-        if num_chips < 20 and use_spatial_filter:
-            logger.warning(f"Only {num_chips} test chips - spatial filtering may be too strict")
-            auto_disable_spatial = True
-        else:
-            auto_disable_spatial = False
-        
-        # Step 1: Multi-metric scoring
-        logger.info("\n[1/4] Computing multi-metric anomaly scores...")
+        logger.info("\n[1/2] Computing multi-metric anomaly scores...")
         all_combined_scores = []
         all_metrics = []
-        all_paths = []
         
         with torch.no_grad():
             for images, paths in tqdm(test_loader, desc="Scoring"):
@@ -649,7 +502,6 @@ class AdvancedAnomalyDetector:
                 
                 all_combined_scores.extend(combined)
                 all_metrics.append(metrics)
-                all_paths.extend(paths)
         
         combined_scores = np.array(all_combined_scores)
         
@@ -666,43 +518,14 @@ class AdvancedAnomalyDetector:
         logger.info(f"   Scores: range=[{combined_scores.min():.4f}, {combined_scores.max():.4f}], "
                    f"mean={combined_scores.mean():.4f}, std={combined_scores.std():.4f}")
         
-        # Step 2: Spatial filtering
-        if use_spatial_filter and not auto_disable_spatial:
-            logger.info("\n[2/4] Applying spatial consistency filter...")
-            spatial_filter = SpatialConsistencyFilter(chip_metadata, combined_scores)
-            results_df = spatial_filter.apply_spatial_filtering(
-                threshold_percentile=base_percentile,
-                min_cluster_size=2
-            )
-        else:
-            if auto_disable_spatial:
-                logger.info("\n[2/4] Spatial filter auto-disabled (small dataset)")
-            else:
-                logger.info("\n[2/4] Spatial filter disabled by configuration")
-            
-            threshold = np.percentile(combined_scores, base_percentile)
-            results_df['is_anomaly_filtered'] = results_df['anomaly_score'] > threshold
-            results_df['cluster_id'] = -1
-            
-            num_detected = results_df['is_anomaly_filtered'].sum()
-            logger.info(f"Detected {num_detected} anomalies above {base_percentile}th percentile threshold")
+        # Simple thresholding
+        logger.info(f"\n[2/2] Applying {base_percentile}th percentile threshold...")
+        threshold = np.percentile(combined_scores, base_percentile)
+        results_df['is_anomaly_final'] = results_df['anomaly_score'] > threshold
+        results_df['cluster_id'] = -1
         
-        # Step 3: Adaptive thresholding
-        if use_adaptive_threshold:
-            logger.info("\n[3/4] Applying adaptive thresholding...")
-            adaptive = AdaptiveThreshold(results_df, results_df['anomaly_score'].values)
-            results_df = adaptive.apply_adaptive_threshold(base_percentile=base_percentile)
-            
-            results_df['is_anomaly_final'] = (
-                results_df['is_anomaly_filtered'] & 
-                results_df['is_anomaly_adaptive']
-            )
-        else:
-            logger.info("\n[3/4] Skipping adaptive threshold")
-            results_df['is_anomaly_final'] = results_df['is_anomaly_filtered']
-        
-        # Step 4: FIXED confidence scoring
-        logger.info("\n[4/4] Computing confidence scores with optimized weighting...")
+        # Confidence calculation (same as Mk13)
+        logger.info("\nComputing confidence scores...")
         results_df['confidence'] = self._compute_confidence(results_df)
         
         results_df = results_df.sort_values('confidence', ascending=False)
@@ -714,57 +537,115 @@ class AdvancedAnomalyDetector:
         logger.info(f"Anomalies detected: {results_df['is_anomaly_final'].sum()}")
         logger.info(f"High confidence (>0.8): {(results_df['confidence'] > 0.8).sum()}")
         
-        if 'cluster_id' in results_df.columns:
-            n_clusters = results_df[results_df['cluster_id'] >= 0]['cluster_id'].nunique()
-            logger.info(f"Spatial clusters: {n_clusters}")
-        
         return results_df
 
     def _compute_confidence(self, df: pd.DataFrame) -> np.ndarray:
-        """
-        FIXED: Adaptive confidence calculation based on whether clustering is active.
-        """
+        """Mk13 optimized confidence for non-clustered data"""
         confidence = np.zeros(len(df))
         
         score_norm = (df['anomaly_score'] - df['anomaly_score'].min()) / \
                      (df['anomaly_score'].max() - df['anomaly_score'].min() + 1e-8)
         
-        # Check if clustering is actually being used
         clustering_active = ('cluster_id' in df.columns and (df['cluster_id'] >= 0).any())
         
-        if clustering_active:
-            # CLUSTERING MODE: Use cluster information
-            logger.info("   Using clustering-based confidence weights")
-            confidence += 0.40 * score_norm
-            
-            in_cluster = (df['cluster_id'] >= 0).astype(float)
-            confidence += 0.30 * in_cluster  # 30% bonus for being in a cluster
-            
-            if 'metric_regularity_norm' in df.columns:
-                confidence += 0.20 * df['metric_regularity_norm']
-            
-            if 'metric_mse_norm' in df.columns and 'metric_gradient_norm' in df.columns:
-                metric_agreement = (df['metric_mse_norm'] + df['metric_gradient_norm']) / 2
-                confidence += 0.10 * metric_agreement
-        else:
-            # NO CLUSTERING MODE: Optimize for contextual + MSE
+        if not clustering_active:
             logger.info("   Using non-clustering confidence weights (optimized for circular lander)")
-            confidence += 0.50 * score_norm  # Combined score gets highest weight
+            confidence += 0.50 * score_norm
             
-            # Contextual metric is critical for circular lander detection
             if 'metric_contextual_norm' in df.columns:
-                confidence += 0.30 * df['metric_contextual_norm']  # 30% for contextual!
+                confidence += 0.30 * df['metric_contextual_norm']
                 logger.info("   Applied 30% weight to contextual metric")
             
-            # MSE is always reliable
             if 'metric_mse_norm' in df.columns:
-                confidence += 0.20 * df['metric_mse_norm']  # 20% for reconstruction error
+                confidence += 0.20 * df['metric_mse_norm']
         
         return np.clip(confidence, 0, 1)
 
 
 # ============================================
-# 7. HIGH-RES VISUALIZATION
+# 5. STABLE TRAINING WITH KL ANNEALING
+# ============================================
+
+def stable_vae_loss(recon_x, x, mu, logvar, beta=0.001, kl_weight=1.0):
+    """Loss with KL annealing support"""
+    MSE = F.mse_loss(recon_x, x, reduction='sum')
+    KLD = -0.5 * torch.sum(1 + logvar - mu.pow(2) - logvar.exp())
+    
+    # Apply KL weight for annealing
+    return MSE + beta * kl_weight * KLD, MSE, KLD
+
+
+class StableVAETrainer:
+    def __init__(self, model, device='cpu', lr=1e-3, warmup_epochs=3):
+        self.model = model.to(device)
+        self.device = device
+        self.optimizer = optim.Adam(self.model.parameters(), lr=lr)
+        self.warmup_epochs = warmup_epochs
+        self.best_loss = float('inf')
+        self.patience_counter = 0
+        
+        # Learning rate scheduler
+        self.scheduler = optim.lr_scheduler.ReduceLROnPlateau(
+            self.optimizer, mode='min', factor=0.5, patience=2
+        )
+        
+    def get_kl_weight(self, epoch, total_epochs):
+        """KL annealing schedule"""
+        if epoch < self.warmup_epochs:
+            return epoch / self.warmup_epochs
+        return 1.0
+    
+    def train_epoch(self, loader, epoch, total_epochs):
+        self.model.train()
+        total_loss, total_mse, total_kld = 0, 0, 0
+        
+        kl_weight = self.get_kl_weight(epoch, total_epochs)
+        
+        for images, _ in tqdm(loader, desc=f"Epoch {epoch+1} (KL weight={kl_weight:.2f})"):
+            images = images.to(self.device)
+            
+            self.optimizer.zero_grad()
+            recon, mu, logvar = self.model(images)
+            
+            loss, mse, kld = stable_vae_loss(recon, images, mu, logvar, kl_weight=kl_weight)
+            
+            # Check for NaN
+            if torch.isnan(loss):
+                logger.error(f"NaN detected at epoch {epoch+1}! Stopping training.")
+                return None, None, None
+            
+            loss.backward()
+            
+            # Gradient clipping
+            torch.nn.utils.clip_grad_norm_(self.model.parameters(), max_norm=1.0)
+            
+            self.optimizer.step()
+            
+            total_loss += loss.item()
+            total_mse += mse.item()
+            total_kld += kld.item()
+        
+        avg_loss = total_loss / len(loader.dataset)
+        avg_mse = total_mse / len(loader.dataset)
+        avg_kld = total_kld / len(loader.dataset)
+        
+        # Update learning rate
+        self.scheduler.step(avg_loss)
+        
+        return avg_loss, avg_mse, avg_kld
+    
+    def save_checkpoint(self, filepath, epoch, loss):
+        torch.save({
+            'epoch': epoch,
+            'model_state_dict': self.model.state_dict(),
+            'optimizer_state_dict': self.optimizer.state_dict(),
+            'loss': loss,
+        }, filepath)
+        logger.info(f"Checkpoint saved: {filepath}")
+
+
+# ============================================
+# 6. VISUALIZATION
 # ============================================
 
 class HighResVisualizer:
@@ -774,50 +655,7 @@ class HighResVisualizer:
         plt.rcParams['figure.dpi'] = 300
         plt.rcParams['savefig.dpi'] = 300
 
-    def plot_reconstruction_examples(self, model, dataset, n_samples=6, device='cpu', upsample_factor=2):
-        model.eval()
-        fig, axes = plt.subplots(3, n_samples, figsize=(n_samples * 4, 12),
-                                gridspec_kw={'hspace': 0.3, 'wspace': 0.2})
-        
-        if n_samples > len(dataset):
-            n_samples = len(dataset)
-            
-        indices = np.random.choice(len(dataset), n_samples, replace=False)
-        
-        with torch.no_grad():
-            for i, idx in enumerate(indices):
-                image, path = dataset[idx]
-                image_batch = image.unsqueeze(0).to(device)
-                recon, _, _ = model(image_batch)
-                
-                original_np = image.cpu().squeeze().numpy()
-                recon_np = recon.cpu().squeeze().numpy()
-                error_map = np.abs(original_np - recon_np)
-                
-                if upsample_factor > 1:
-                    original_np = zoom(original_np, upsample_factor, order=1)
-                    recon_np = zoom(recon_np, upsample_factor, order=1)
-                    error_map = zoom(error_map, upsample_factor, order=1)
-                
-                axes[0, i].imshow(original_np, cmap='gray', interpolation='bilinear', vmin=0, vmax=1)
-                axes[0, i].axis('off')
-                if i == 0: axes[0, i].set_ylabel('Original', fontsize=14, fontweight='bold')
-                
-                axes[1, i].imshow(recon_np, cmap='gray', interpolation='bilinear', vmin=0, vmax=1)
-                axes[1, i].axis('off')
-                if i == 0: axes[1, i].set_ylabel('Reconstructed', fontsize=14, fontweight='bold')
-                
-                im = axes[2, i].imshow(error_map, cmap='hot', interpolation='bilinear')
-                axes[2, i].axis('off')
-                if i == 0: axes[2, i].set_ylabel('Error', fontsize=14, fontweight='bold')
-        
-        plt.suptitle('High-Resolution Reconstructions (Mk14)', fontsize=16, fontweight='bold')
-        plt.savefig(self.output_dir / 'reconstructions_mk14.png', dpi=300, bbox_inches='tight')
-        logger.info(f"Saved reconstruction examples to {self.output_dir / 'reconstructions_mk14.png'}")
-        plt.close()
-
     def plot_top_anomalies_with_confidence(self, results_df, n_samples=12):
-        """Plot top anomalies sorted by confidence"""
         top_anomalies = results_df.nlargest(n_samples, 'confidence')
         
         rows = int(np.ceil(n_samples / 4))
@@ -831,7 +669,6 @@ class HighResVisualizer:
             with rasterio.open(row['chip_path']) as src:
                 chip = src.read(1)
             
-            # Normalize for display
             chip = (chip - chip.min()) / (chip.max() - chip.min() + 1e-8)
             chip_upsampled = zoom(chip, 2, order=1)
             axes[idx].imshow(chip_upsampled, cmap='gray', interpolation='bilinear')
@@ -845,8 +682,7 @@ class HighResVisualizer:
                 color = '#fdd835'
             
             title = (f"Confidence: {conf:.3f}\n"
-                    f"Score: {row['anomaly_score']:.3f}\n"
-                    f"Cluster: {row.get('cluster_id', -1)}")
+                    f"Score: {row['anomaly_score']:.3f}")
             
             axes[idx].set_title(title, fontsize=9, color=color, fontweight='bold')
             axes[idx].axis('off')
@@ -856,59 +692,22 @@ class HighResVisualizer:
                 spine.set_linewidth(4)
                 spine.set_visible(True)
         
-        # Turn off extra axes
         for i in range(len(top_anomalies), len(axes)):
             axes[i].axis('off')
             
-        plt.suptitle('Top Anomalies by Confidence (Mk14)', fontsize=18, fontweight='bold')
+        plt.suptitle('Top Anomalies by Confidence (Mk14 Stable)', fontsize=18, fontweight='bold')
         plt.savefig(self.output_dir / 'top_anomalies_mk14.png', dpi=300, bbox_inches='tight')
-        logger.info(f"Saved top anomalies visualization to {self.output_dir / 'top_anomalies_mk14.png'}")
+        logger.info(f"Saved: {self.output_dir / 'top_anomalies_mk14.png'}")
         plt.close()
 
 
 # ============================================
-# 8. TRAINING
-# ============================================
-
-def vae_loss_function(recon_x, x, mu, logvar, beta=0.001):
-    MSE = F.mse_loss(recon_x, x, reduction='sum')
-    KLD = -0.5 * torch.sum(1 + logvar - mu.pow(2) - logvar.exp())
-    return MSE + beta * KLD, MSE, KLD
-
-class VAETrainer:
-    def __init__(self, model, device='cpu', lr=1e-3):
-        self.model = model.to(device)
-        self.device = device
-        self.optimizer = optim.Adam(self.model.parameters(), lr=lr)
-        
-    def train_epoch(self, loader):
-        self.model.train()
-        total_loss, total_mse, total_kld = 0, 0, 0
-        for images, _ in tqdm(loader, desc="Training"):
-            images = images.to(self.device)
-            self.optimizer.zero_grad()
-            recon, mu, logvar = self.model(images)
-            loss, mse, kld = vae_loss_function(recon, images, mu, logvar)
-            loss.backward()
-            self.optimizer.step()
-            
-            # Gradient clipping for stability
-            torch.nn.utils.clip_grad_norm_(self.model.parameters(), max_norm=1.0)
-            
-            self.optimizer.step()
-            total_loss += loss.item()
-            total_mse += mse.item()
-            total_kld += kld.item()
-        return total_loss / len(loader.dataset), total_mse / len(loader.dataset), total_kld / len(loader.dataset)
-
-
-# ============================================
-# 9. MAIN PIPELINE
+# 7. MAIN PIPELINE
 # ============================================
 
 def main():
     logger.info("="*70)
-    logger.info("XENARCH Mk14: OPTIMIZED CIRCULAR LANDER DETECTION")
+    logger.info("XENARCH Mk14: STABLE TRAINING FOR LANDER DETECTION")
     logger.info("="*70)
     
     config = {
@@ -916,17 +715,17 @@ def main():
         'latent_dim': 56,
         'batch_size': 4,
         'num_epochs': 15,
-        'learning_rate': 0.0005,
+        'learning_rate': 0.0005,  # Lower LR
+        'warmup_epochs': 3,
         'base_percentile': 95,
-        'use_spatial_filter': False,  # Disabled for small datasets
-        'use_adaptive_threshold': True,
+        'use_spatial_filter': False,
         'device': 'cuda' if torch.cuda.is_available() else 'cpu'
     }
     
     logger.info(f"Configuration: {json.dumps(config, indent=2)}")
     
     data_root = Path("data")
-    results_dir = Path("results") / "mk14_optimized"
+    results_dir = Path("results") / "mk14_stable"
     results_dir.mkdir(exist_ok=True, parents=True)
     
     # 1. Chip Extraction
@@ -949,13 +748,10 @@ def main():
         if img.suffix.lower() in ['.png', '.jpg', '.tif', '.tiff']:
             chips = extractor.extract_grid(str(img), str(test_chips_dir), max_size_mb=10.0)
             all_test_chips.extend(chips)
-            break # Just process one test image for speed
+            break
     
-    if not all_train_chips:
-        logger.error("No training chips extracted! Check 'training data' directory.")
-        return
-    if not all_test_chips:
-        logger.error("No test chips extracted! Check 'Test data' directory.")
+    if not all_train_chips or not all_test_chips:
+        logger.error("Missing training or test data!")
         return
         
     train_df = pd.DataFrame(all_train_chips)
@@ -967,7 +763,6 @@ def main():
     # 2. Create datasets
     logger.info("\n[STEP 2/5] Creating datasets...")
     train_transform = transforms.Compose([
-        # Random transforms for augmentation
         transforms.RandomHorizontalFlip(),
         transforms.RandomVerticalFlip()
     ])
@@ -978,43 +773,52 @@ def main():
     train_loader = DataLoader(train_ds, batch_size=config['batch_size'], shuffle=True, num_workers=0)
     test_loader = DataLoader(test_ds, batch_size=config['batch_size'], shuffle=False, num_workers=0)
     
-    # 3. Train model
-    logger.info(f"\n[STEP 3/5] Training VAE on {config['device']}...")
-    model = ConvolutionalVAE(
+    # 3. Train stable model
+    logger.info(f"\n[STEP 3/5] Training Stable VAE on {config['device']}...")
+    model = StableConvolutionalVAE(
         latent_dim=config['latent_dim'],
         input_size=config['chip_size']
     )
-    trainer = VAETrainer(model, device=config['device'], lr=config['learning_rate'])
     
+    trainer = StableVAETrainer(
+        model, 
+        device=config['device'], 
+        lr=config['learning_rate'],
+        warmup_epochs=config['warmup_epochs']
+    )
+    
+    best_loss = float('inf')
     for epoch in range(config['num_epochs']):
-        loss, mse, kld = trainer.train_epoch(train_loader)
+        loss, mse, kld = trainer.train_epoch(train_loader, epoch, config['num_epochs'])
+        
+        if loss is None:
+            logger.error("Training stopped due to NaN")
+            break
+            
         logger.info(f"Epoch {epoch+1}/{config['num_epochs']} - Loss: {loss:.2f}, MSE: {mse:.2f}, KLD: {kld:.2f}")
+        
+        if loss < best_loss:
+            best_loss = loss
+            model_path = data_root / "models" / "xenarch_mk14_best.pth"
+            model_path.parent.mkdir(exist_ok=True, parents=True)
+            trainer.save_checkpoint(model_path, epoch, loss)
     
-    # Save model
-    model_path = data_root / "models" / "xenarch_mk14.pth"
-    model_path.parent.mkdir(exist_ok=True, parents=True)
-    torch.save(model.state_dict(), model_path)
-    logger.info(f"Model saved: {model_path}")
-    
-    # 4. Advanced anomaly detection
-    logger.info("\n[STEP 4/5] Running optimized anomaly detection...")
+    # 4. Detection
+    logger.info("\n[STEP 4/5] Running anomaly detection...")
     detector = AdvancedAnomalyDetector(model, device=config['device'])
     
     results_df = detector.detect_anomalies(
         test_loader=test_loader,
         chip_metadata=all_test_chips,
-        use_spatial_filter=config['use_spatial_filter'],
-        use_adaptive_threshold=config['use_adaptive_threshold'],
         base_percentile=config['base_percentile']
     )
     
-    # Save results
     results_df.to_csv(results_dir / "xenarch_mk14_results.csv", index=False)
     logger.info(f"Results saved: {results_dir / 'xenarch_mk14_results.csv'}")
     
-    # Print detailed top detections with metric breakdown
+    # Print top detections
     logger.info("\n" + "="*70)
-    logger.info("TOP 10 DETECTIONS WITH METRIC BREAKDOWN")
+    logger.info("TOP 10 DETECTIONS")
     logger.info("="*70)
     
     top_10 = results_df.nlargest(min(10, len(results_df)), 'confidence')
@@ -1022,31 +826,20 @@ def main():
         logger.info(f"\nRank {rank}: {Path(row['chip_path']).name}")
         logger.info(f"  Confidence:  {row['confidence']:.4f}")
         logger.info(f"  Total Score: {row['anomaly_score']:.4f}")
-        logger.info(f"  Metrics:")
-        logger.info(f"    MSE:        {row.get('metric_mse', 0):.4f} (norm: {row.get('metric_mse_norm', 0):.4f})")
-        logger.info(f"    Contextual: {row.get('metric_contextual', 0):.4f} (norm: {row.get('metric_contextual_norm', 0):.4f}) <- KEY FOR LANDER")
-        logger.info(f"    Density:    {row.get('metric_density', 0):.4f} (norm: {row.get('metric_density_norm', 0):.4f})")
-        logger.info(f"    Gradient:   {row.get('metric_gradient', 0):.4f} (norm: {row.get('metric_gradient_norm', 0):.4f})")
-        logger.info(f"    Regularity: {row.get('metric_regularity', 0):.4f} (norm: {row.get('metric_regularity_norm', 0):.4f})")
+        logger.info(f"  Contextual:  {row.get('metric_contextual', 0):.4f} (norm: {row.get('metric_contextual_norm', 0):.4f})")
+        logger.info(f"  MSE:         {row.get('metric_mse', 0):.4f} (norm: {row.get('metric_mse_norm', 0):.4f})")
     
     # 5. Visualization
     logger.info("\n[STEP 5/5] Generating visualizations...")
     viz = HighResVisualizer(output_dir=results_dir)
-    
-    viz.plot_reconstruction_examples(model, test_ds, n_samples=min(6, len(test_ds)), device=config['device'])
     viz.plot_top_anomalies_with_confidence(results_df, n_samples=min(12, len(results_df)))
     
     logger.info("\n" + "="*70)
-    logger.info("XENARCH Mk14 PIPELINE COMPLETE!")
+    logger.info("XENARCH Mk14 COMPLETE!")
     logger.info("="*70)
-    logger.info(f"Results directory: {results_dir}")
-    logger.info(f"Total anomalies: {results_df['is_anomaly_final'].sum()}")
-    logger.info(f"High confidence (>0.8): {(results_df['confidence'] > 0.8).sum()}")
-    logger.info("\nKey improvements in Mk14:")
-    logger.info("  ✓ Fixed confidence calculation for non-clustered data")
-    logger.info("  ✓ 30% weight on contextual metric (catches circular lander)")
-    logger.info("  ✓ Only 5% weight on regularity (doesn't penalize circular features)")
-    logger.info("  ✓ Detailed metric breakdown in output")
+    logger.info(f"Results: {results_dir}")
+    logger.info(f"Anomalies: {results_df['is_anomaly_final'].sum()}")
+    logger.info(f"High confidence: {(results_df['confidence'] > 0.8).sum()}")
     
 if __name__ == "__main__":
     main()

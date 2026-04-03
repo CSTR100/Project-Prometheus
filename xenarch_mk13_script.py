@@ -1,8 +1,8 @@
 """
-Technosignature Detection: Xenarch Mk14 - Optimized for Circular Lander Detection
+Technosignature Detection: Xenarch Mk13 - Optimized for Circular Lander Detection
 ===================================================================================
 
-Key Fix in Mk14:
+Key Fix in Mk13:
 - Confidence calculation now properly weights contextual metric when spatial filtering is disabled
 - This ensures circular features (lunar lander) score as high as angular features
 - Optimized for small datasets where lander appears in only 1-2 chips
@@ -14,7 +14,7 @@ Improvements from Mk12:
 ✓ Optimized for Apollo landing site detection
 
 Usage:
-    python xenarch_mk14_script.py
+    python xenarch_mk13_script.py
 """
 
 import os
@@ -47,7 +47,7 @@ from loguru import logger
 # Configure logger
 logger.remove()
 logger.add(sys.stderr, level="INFO")
-logger.add("logs/xenarch_mk14_{time}.log", rotation="10 MB")
+logger.add("logs/xenarch_mk13_{time}.log", rotation="10 MB")
 
 
 # ============================================
@@ -217,12 +217,10 @@ class LunarDataset(Dataset):
         with rasterio.open(path) as src:
             img = src.read(1).astype(np.float32)
         
-        # Robust normalization
-        p1, p99 = np.percentile(img, [1, 99])
-        img = np.clip((img - p1) / (p99 - p1 + 1e-8), 0, 1)
+        img = (img - img.min()) / (img.max() - img.min() + 1e-8)
         img = img[np.newaxis, :]
         
-        image_tensor = torch.from_numpy(img).float()
+        image_tensor = torch.from_numpy(img)
         if self.transform:
             image_tensor = self.transform(image_tensor)
             
@@ -625,7 +623,7 @@ class AdvancedAnomalyDetector:
     ) -> pd.DataFrame:
         
         logger.info("\n" + "="*70)
-        logger.info("ADVANCED ANOMALY DETECTION PIPELINE (Mk14)")
+        logger.info("ADVANCED ANOMALY DETECTION PIPELINE (Mk13)")
         logger.info("="*70)
         
         num_chips = len(chip_metadata)
@@ -811,9 +809,9 @@ class HighResVisualizer:
                 axes[2, i].axis('off')
                 if i == 0: axes[2, i].set_ylabel('Error', fontsize=14, fontweight='bold')
         
-        plt.suptitle('High-Resolution Reconstructions (Mk14)', fontsize=16, fontweight='bold')
-        plt.savefig(self.output_dir / 'reconstructions_mk14.png', dpi=300, bbox_inches='tight')
-        logger.info(f"Saved reconstruction examples to {self.output_dir / 'reconstructions_mk14.png'}")
+        plt.suptitle('High-Resolution Reconstructions (Mk13)', fontsize=16, fontweight='bold')
+        plt.savefig(self.output_dir / 'reconstructions_mk13.png', dpi=300, bbox_inches='tight')
+        logger.info(f"Saved reconstruction examples to {self.output_dir / 'reconstructions_mk13.png'}")
         plt.close()
 
     def plot_top_anomalies_with_confidence(self, results_df, n_samples=12):
@@ -860,9 +858,9 @@ class HighResVisualizer:
         for i in range(len(top_anomalies), len(axes)):
             axes[i].axis('off')
             
-        plt.suptitle('Top Anomalies by Confidence (Mk14)', fontsize=18, fontweight='bold')
-        plt.savefig(self.output_dir / 'top_anomalies_mk14.png', dpi=300, bbox_inches='tight')
-        logger.info(f"Saved top anomalies visualization to {self.output_dir / 'top_anomalies_mk14.png'}")
+        plt.suptitle('Top Anomalies by Confidence (Mk13)', fontsize=18, fontweight='bold')
+        plt.savefig(self.output_dir / 'top_anomalies_mk13.png', dpi=300, bbox_inches='tight')
+        logger.info(f"Saved top anomalies visualization to {self.output_dir / 'top_anomalies_mk13.png'}")
         plt.close()
 
 
@@ -891,11 +889,6 @@ class VAETrainer:
             loss, mse, kld = vae_loss_function(recon, images, mu, logvar)
             loss.backward()
             self.optimizer.step()
-            
-            # Gradient clipping for stability
-            torch.nn.utils.clip_grad_norm_(self.model.parameters(), max_norm=1.0)
-            
-            self.optimizer.step()
             total_loss += loss.item()
             total_mse += mse.item()
             total_kld += kld.item()
@@ -908,15 +901,15 @@ class VAETrainer:
 
 def main():
     logger.info("="*70)
-    logger.info("XENARCH Mk14: OPTIMIZED CIRCULAR LANDER DETECTION")
+    logger.info("XENARCH Mk13: OPTIMIZED CIRCULAR LANDER DETECTION")
     logger.info("="*70)
     
     config = {
         'chip_size': 256,
         'latent_dim': 56,
         'batch_size': 4,
-        'num_epochs': 15,
-        'learning_rate': 0.0005,
+        'num_epochs': 10,
+        'learning_rate': 0.001,
         'base_percentile': 95,
         'use_spatial_filter': False,  # Disabled for small datasets
         'use_adaptive_threshold': True,
@@ -926,7 +919,7 @@ def main():
     logger.info(f"Configuration: {json.dumps(config, indent=2)}")
     
     data_root = Path("data")
-    results_dir = Path("results") / "mk14_optimized"
+    results_dir = Path("results") / "mk13_optimized"
     results_dir.mkdir(exist_ok=True, parents=True)
     
     # 1. Chip Extraction
@@ -991,7 +984,7 @@ def main():
         logger.info(f"Epoch {epoch+1}/{config['num_epochs']} - Loss: {loss:.2f}, MSE: {mse:.2f}, KLD: {kld:.2f}")
     
     # Save model
-    model_path = data_root / "models" / "xenarch_mk14.pth"
+    model_path = data_root / "models" / "xenarch_mk13.pth"
     model_path.parent.mkdir(exist_ok=True, parents=True)
     torch.save(model.state_dict(), model_path)
     logger.info(f"Model saved: {model_path}")
@@ -1009,8 +1002,8 @@ def main():
     )
     
     # Save results
-    results_df.to_csv(results_dir / "xenarch_mk14_results.csv", index=False)
-    logger.info(f"Results saved: {results_dir / 'xenarch_mk14_results.csv'}")
+    results_df.to_csv(results_dir / "xenarch_mk13_results.csv", index=False)
+    logger.info(f"Results saved: {results_dir / 'xenarch_mk13_results.csv'}")
     
     # Print detailed top detections with metric breakdown
     logger.info("\n" + "="*70)
@@ -1037,12 +1030,12 @@ def main():
     viz.plot_top_anomalies_with_confidence(results_df, n_samples=min(12, len(results_df)))
     
     logger.info("\n" + "="*70)
-    logger.info("XENARCH Mk14 PIPELINE COMPLETE!")
+    logger.info("XENARCH Mk13 PIPELINE COMPLETE!")
     logger.info("="*70)
     logger.info(f"Results directory: {results_dir}")
     logger.info(f"Total anomalies: {results_df['is_anomaly_final'].sum()}")
     logger.info(f"High confidence (>0.8): {(results_df['confidence'] > 0.8).sum()}")
-    logger.info("\nKey improvements in Mk14:")
+    logger.info("\nKey improvements in Mk13:")
     logger.info("  ✓ Fixed confidence calculation for non-clustered data")
     logger.info("  ✓ 30% weight on contextual metric (catches circular lander)")
     logger.info("  ✓ Only 5% weight on regularity (doesn't penalize circular features)")
