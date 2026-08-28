@@ -1,0 +1,16 @@
+{
+  "combined_weights": {
+    "mse": 0.20,
+    "density": 0.10,
+    "contextual": 0.12,
+    "gradient": 0.13,
+    "edge": 0.45
+  },
+  "confidence_weights": {
+    "score": 0.35,
+    "contextual": 0.08,
+    "mse": 0.10,
+    "edge": 0.32,
+    "gradient": 0.15
+  }
+}
