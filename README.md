@@ -102,18 +102,19 @@ Model VersionResolutionLatent DimTraining TimeDetection RateMk4 Baseline64×6412
 Example Detections
 The system successfully flags:
 
+```
 ✅ Apollo Lunar Module descent stages
 ✅ Rover tracks and disturbed regolith
 ✅ Scientific equipment (EASEP)
 ✅ Landing pads and geometric structures
-
+```
 While correctly identifying as natural:
-
+```
 ✅ Complex crater formations
 ✅ Boulder fields
 ✅ Unusual lighting conditions
 ✅ Natural linear features (rilles)
-
+```
 🛠️ Configuration
 Key Hyperparameters
 Edit these in the config dictionary:
