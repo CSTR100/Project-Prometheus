@@ -1,0 +1,39 @@
+# ── Python ───────────────────────────────────────────────────────────────
+__pycache__/
+*.py[cod]
+*.egg-info/
+.pytest_cache/
+.ipynb_checkpoints/
+
+# ── virtual environments ─────────────────────────────────────────────────
+venv/
+.venv/
+env/
+
+# ── harvested / downloaded imagery ───────────────────────────────────────
+# lroc_fetch.py       --output defaults to ./reference_corpus
+# dowload-img-various-api.py  --outdir defaults to ./data
+# LRO NAC .IMG frames run 250-500 MB each; GitHub rejects files over 100 MB.
+reference_corpus/
+data/
+*.IMG
+*.imq
+
+# ── extracted chips ──────────────────────────────────────────────────────
+# Pipeline chip arrays are scratch output. Curated .npy training chips
+# under `training data/` are kept (mk19 reads .npy as a baseline format).
+*.npy
+!training data/**/*.npy
+chips/
+train_chips/
+
+# ── local run output ─────────────────────────────────────────────────────
+*.log
+logs/
+
+# ── OS / editor ──────────────────────────────────────────────────────────
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/
+*.swp
