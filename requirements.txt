@@ -1,0 +1,63 @@
+# Project Prometheus / Xenarch — Python dependencies
+#
+#   python -m venv venv
+#   source venv/bin/activate          # Windows: venv\Scripts\activate
+#   pip install -r requirements.txt
+#
+# Verified on Python 3.11 (3.9+ expected to work).
+# Covers the current scripts:
+#   xenarch_mk19_script.py   web app (Flask + VAE)
+#   xenarch_pipeline.py      importable scoring pipeline
+#   lroc_fetch.py            LRO NAC / Ch-2 OHRC terrain harvester
+#   training data/dowload-img-various-api.py   (stdlib only)
+
+# ── core numerics / imaging ──────────────────────────────────────────────
+numpy==2.4.6
+scipy==1.17.1
+pillow==12.3.0
+
+# ── web layer (xenarch_mk19_script.py) ───────────────────────────────────
+flask==3.1.3
+flask-cors==6.0.5
+loguru==0.7.3
+gunicorn==23.0.0
+# Production entry point (single worker — job state lives in-process):
+#   gunicorn -w 1 -k gthread --threads 8 --timeout 120 xenarch_mk19_script:app
+
+# ── data harvesting (lroc_fetch.py) ──────────────────────────────────────
+requests==2.34.2
+tqdm==4.70.0
+
+# ── planetary raster I/O ─────────────────────────────────────────────────
+# Required to read PDS3 .IMG frames (LRO NAC, HiRISE, CTX) and GeoTIFFs.
+# Without it the scripts silently fall back to Pillow, which cannot open
+# .IMG at all. The PyPI wheel bundles GDAL 3.10 with the PDS/PDS4/ISIS2/
+# ISIS3 drivers, so no separate GDAL or ISIS install is needed.
+rasterio==1.4.4
+
+# ── deep learning (optional but recommended) ─────────────────────────────
+# Without torch, mk19 degrades to the NumPy scorer and xenarch_pipeline
+# ignores use_vae=True. The default PyPI wheel on Linux is the CUDA build
+# (~3 GB); for a CPU-only box install it first with:
+#   pip install torch --index-url https://download.pytorch.org/whl/cpu
+torch==2.13.0
+
+# ── optional ─────────────────────────────────────────────────────────────
+# PDS3 label parsing. lroc_fetch.py imports it behind a try/except and sets
+# HAS_PVL, but does not currently use it. Safe to omit.
+pvl==1.3.2
+
+# ── legacy scripts (Mk3 – Mk15) ──────────────────────────────────────────
+# The archived CLI pipelines need extras the current scripts do not.
+# Uncomment if you want to run them:
+# matplotlib>=3.8
+# seaborn>=0.13
+# pandas>=2.2          # also used by xenarch_mk16/mk17_script.py
+# scikit-learn>=1.4
+# torchvision>=0.18
+#
+# Mk3 only — these pull in system libraries (GDAL, libpq):
+# geopandas>=0.14
+# shapely>=2.0
+# psycopg2-binary>=2.9
+# pyyaml>=6.0
