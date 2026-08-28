@@ -173,6 +173,16 @@ relative to this scene."
 Confidence is the sigmoid of the robust z of the combined score, centered at z=2: a chip 2 robust
 sigmas above the baseline median scores 0.5, and 4 sigmas scores ~0.88.
 
+### Why it works
+
+- **Natural features** → low reconstruction error — the model has seen similar patterns
+- **Artificial structures** → high reconstruction error — the model has never seen these patterns
+
+Mk19 sharpens this in two ways. Trimmed training keeps anomalies out of the baseline the model
+learns, so a lander in the training corpus can't teach the VAE that landers are normal. And
+scoring against a *fixed* natural-terrain baseline means a chip's score reflects distance from
+known geology, not merely how it compares to its neighbours in the same scene.
+
 ---
 
 ## 🛠️ Configuration
@@ -278,6 +288,22 @@ baseline threshold, top confidence 67.4%. No chip exceeded the 0.8 high-confiden
 the calibration behaving as designed, not a failure: confidence is measured against the natural
 baseline, so "moderately unusual" does not get promoted to "technosignature."
 
+### Detection track record
+
+Reported across earlier versions (Mk4–Mk13). The system successfully flags:
+
+- ✅ Apollo Lunar Module descent stages
+- ✅ Rover tracks and disturbed regolith
+- ✅ Scientific equipment (EASEP)
+- ✅ Landing pads and geometric structures
+
+While correctly identifying as natural:
+
+- ✅ Complex crater formations
+- ✅ Boulder fields
+- ✅ Unusual lighting conditions
+- ✅ Natural linear features (rilles)
+
 ---
 
 ## 🕰️ Version History
@@ -293,6 +319,17 @@ baseline, so "moderately unusual" does not get promoted to "technosignature."
 Earlier versions are retained in the repository for reference. They need extra dependencies
 (matplotlib, seaborn, pandas, scikit-learn, torchvision) — see the commented section at the
 bottom of `requirements.txt`.
+
+### Earlier version benchmarks
+
+Historical figures from the Mk4/Mk5 era, kept for comparison:
+
+| Model version | Resolution | Latent dim | Training time | Detection rate |
+|---|---|---|---|---|
+| Mk4 Baseline | 64×64 | 128 | ~10 min | Good |
+| Mk4 Optimized | 64×64 | 48 | ~10 min | Better |
+| High-Res | 128×128 | 128 | ~25 min | Best |
+| Mk5 VAE | 64×64 | 32–64 | ~15 min | Excellent |
 
 ---
 
