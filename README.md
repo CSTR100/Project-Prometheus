@@ -180,6 +180,15 @@ config = {
     # ... other settings
 }
 
+-Data source
+https://pradan.issdc.gov.in/ch2/protected/browse.xhtml
+https://pds-imaging.jpl.nasa.gov/tools/atlas/search?gather.common.instrument=HIRISE&gather.common.product_type=EDR
+https://pradan.issdc.gov.in/ch2/protected/browse.xhtml?id=tmc2
+https://pradan.issdc.gov.in/ch2/protected/browse.xhtml
+low res
+https://pds-imaging.jpl.nasa.gov/tools/atlas/search?gather.common.spacecraft=mars_global_surveyor&gather.common.instrument=MOC
+kinda https://pds-imaging.jpl.nasa.gov/tools/atlas/search?gather.common.mission=lro
+
 # Run pipeline
 main()
 Using Pre-trained Models
@@ -267,4 +276,5 @@ Lunar Mapping Tools
 
 ⭐ Star this repository if you find it useful!
 Last Updated: January 2026
+
 
