@@ -97,8 +97,9 @@ Natural features → Low reconstruction error (model has seen similar patterns)
 Artificial structures → High reconstruction error (model has never seen these patterns)
 
 📊 Results
-```
+
 Performance Metrics:
+```
 Model Version Resolution Latent Dimensional Training Time 
 Detection Rate (Mk4 Baseline)
 ```
