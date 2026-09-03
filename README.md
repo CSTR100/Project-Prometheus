@@ -175,6 +175,72 @@ test_dirs = ['Test data/apollo11', 'Test data/apollo17', 'Test data/chang_e']
 for test_dir in test_dirs:
     # Extract and analyze chips
     # ... processing code
+🛰️ Imagery agents
+Two harvesters feed the pipeline from the public planetary archives, and they
+are deliberate opposites.
+
+lroc_fetch.py — negative set. Crawls LRO NAC (and optionally Chandrayaan-2
+OHRC) for natural terrain, actively excluding a 2° box around every known
+landing site, and writes reference chips the autoencoder trains on.
+
+```
+python lroc_fetch.py --source lroc --frames 10
+```
+
+apollo16_agent.py — positive control. Goes after one specific piece of human
+hardware: the Apollo 16 LM "Orion" descent stage at Descartes (8.9730°S,
+15.5002°E). These chips contain known artificial structure, so they are what
+you score the detector against — anything that fails to flag them is a miss you
+can measure.
+
+```
+python apollo16_agent.py                  # search, rank, cut out the best 3 frames
+python apollo16_agent.py --dry-run        # see what it would fetch, and why
+python apollo16_agent.py --self-test      # offline logic checks, no network
+python apollo16_agent.py --emit-isis      # ISIS3 recipe for metre-level registration
+```
+
+The agent runs a fixed loop with a fallback at every stage and journals each
+decision to journal.json:
+
+```
+PLAN    resolve the target point and the search box
+SEARCH  ODE REST (rich geometry metadata), falling back to the PDS
+        cumulative index, whose column offsets are read from CUMINDEX.LBL
+        rather than hardcoded
+PROBE   HTTP Range-read each candidate's 64 KB PDS3 label instead of pulling
+        a 250 MB frame just to read its header
+RANK    score on ground sample distance (55%), incidence angle (25%) and
+        emission angle (20%) — weights overridable with --weights
+LOCATE  invert the frame corner coordinates by Newton iteration; fall back to
+        a tangent-plane projection about the frame centre
+FETCH   Range-download only the line span around the target — roughly 5 MB
+        instead of 250 MB per frame
+VERIFY  heuristic check for a bright compact object with an attached shadow
+REPORT  .npy + .png chips, manifest.json, journal.json
+```
+
+Output drops into the same manifest schema lroc_fetch.py uses:
+
+```
+manifest = json.load(open('apollo16_imagery/manifest.json'))
+test_paths = [c['chip_path'] for c in manifest['chips']]
+```
+
+Scale check: the descent stage body is about 4.2 m across and the landing gear
+spreads 9.4 m footpad to footpad. NAC resolves ~0.5 m/pixel from the 50 km
+mapping orbit and better from the low-altitude campaign, so the target spans
+roughly 20-40 pixels — enough for the 128×128 and 256×256 chip sizes, marginal
+at 64×64.
+
+Two caveats worth knowing before you trust an output. The locator is
+approximate (corner interpolation, good to roughly a hundred metres), which is
+why the default crop is ~1 km wide and why --emit-isis prints the campt recipe
+for exact registration; feed the result back with --refine-line/--refine-sample.
+And the VERIFY score is triage for ordering human review, not a detection —
+sunlit boulders produce the same bright-plus-shadow signature, which is the
+entire reason the autoencoder exists.
+
 🤝 Contributing
 Contributions are welcome! Please:
 
