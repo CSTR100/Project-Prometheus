@@ -109,9 +109,6 @@ The system successfully flags:
 
 ```
 ✅ Apollo Lunar Module descent stages
-✅ Rover tracks and disturbed regolith
-✅ Scientific equipment (EASEP)
-✅ Landing pads and geometric structures
 ```
 While correctly identifying as natural:
 ```
@@ -149,28 +146,7 @@ Reduce batch_size to fit GPU memory
 
 📦 Data
 Training Data
-Not included in repository due to size. Download natural lunar terrain imagery from:
-
-NASA LROC Image Viewer
-NASA TREK API
-Planetary Data System (PDS)
-
-Place images in training data/ folder.
-Test Data
-Example test data with Apollo landing sites available at:
-
-Download Link - Google Drive (add your link)
-Or use NASA TREK tiles covering known landing sites
-
-Supported Formats
-
-GeoTIFF (.tif, .tiff)
-PNG (.png)
-JPEG (.jpg, .jpeg)
-
-🧪 Advanced Usage
-Training on Custom Data
-pythonfrom anomaly_detection_pipeline import *
+imagery of the Moon and Mars from Lunar Reconnaissance Orbiter (LROC) and Mars Reconnaissance orbiter (HiRISE) cameras.
 
 # Configure for your data
 config = {
@@ -221,8 +197,8 @@ Development Roadmap
 📝 Citation
 If you use this work in your research, please cite:
 bibtex@software{lunar_anomaly_detection,
-  author = {Your Name},
-  title = {Lunar Anomaly Detection Pipeline},
+  author = {Strom et al},
+  title = {Planetary Anomaly Detection Pipeline},
   year = {2026},
   url = {https://github.com/yourusername/lunar-anomaly-detection}
 }
