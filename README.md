@@ -168,7 +168,6 @@ model.load_state_dict(torch.load('data/models/autoencoder_128.pth'))
 model.eval()
 
 # Run inference on new image
-# ... your code here
 Batch Processing
 python# Process multiple test directories
 test_dirs = ['Test data/apollo11', 'Test data/apollo17', 'Test data/chang_e']
