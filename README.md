@@ -57,7 +57,7 @@ lunar-anomaly-detection/
 ├── ARCHITECTURE.md                    # Detailed technical documentation
 ├── .gitignore                         # Git ignore rules
 │
-├── training data/                     # Natural lunar terrain (not included)
+├── training data/                     # Natural lunar terrain
 ├── Test data/                         # Test images with potential anomalies
 ├── data/                              # Processed chips and labels
 │   ├── processed/
