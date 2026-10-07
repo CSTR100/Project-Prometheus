@@ -1,8 +1,5 @@
 🌙 Lunar Anomaly Detection Pipeline
 An unsupervised machine learning system for detecting artificial structures and anomalies on planetary surfaces using autoencoder-based reconstruction error analysis.
-Show Image
-Show Image
-Show Image
 
 🎯 Overview
 This project implements a novel approach to technosignature detection on lunar and planetary surfaces. By training exclusively on natural geological features, the system learns what "normal" looks like and flags anything anomalous - including artificial structures like landing sites, rovers, and human-made equipment.
