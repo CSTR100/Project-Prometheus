@@ -165,7 +165,7 @@ kinda https://pds-imaging.jpl.nasa.gov/tools/atlas/search?gather.common.mission=
 # Run pipeline
 main()
 Using Pre-trained Models
-pythonimport torch
+python import torch
 from anomaly_detection_pipeline import AdaptiveConvolutionalAutoencoder
 
 # Load model
@@ -217,12 +217,11 @@ Apollo missions for validation data
 PyTorch and scikit-learn communities
 
 📧 Contact
-Your Name
+Caleb Strom
 
-Email: your.email@example.com
-GitHub: @yourusername
-Project Link: https://github.com/yourusername/lunar-anomaly-detection
-
+Email: calebstrom5@gmail.com
+GitHub: @CSTR100
+Project Link: https://github.com/CSTR100/Project-Prometheus
 🐛 Known Issues
 
 Large datasets (>1GB) may require batch processing
